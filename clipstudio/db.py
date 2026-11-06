@@ -36,17 +36,18 @@ class Library:
         self.con.execute("PRAGMA foreign_keys=ON")
         self.con.executescript(SCHEMA)
         columns = [r["name"] for r in self.con.execute("PRAGMA table_info(sessions)")]
-        if "url" not in columns:        # libraries made by 0.1.0
-            self.con.execute("ALTER TABLE sessions ADD COLUMN url TEXT DEFAULT ''")
+        for column in ("url", "folder"):        # libraries made by older versions
+            if column not in columns:
+                self.con.execute("ALTER TABLE sessions ADD COLUMN %s TEXT DEFAULT ''" % column)
 
     def close(self):
         self.con.close()
 
     # ---- sessions
-    def add_session(self, name, source, record_start=None, url=""):
+    def add_session(self, name, source, record_start=None, url="", folder=""):
         with self.con:
-            cur = self.con.execute("INSERT INTO sessions(name, source, created, record_start, url) VALUES (?,?,?,?,?)",
-                                   (name, source, time.time(), record_start, url))
+            cur = self.con.execute("INSERT INTO sessions(name, source, created, record_start, url, folder) "
+                                   "VALUES (?,?,?,?,?,?)", (name, source, time.time(), record_start, url, folder))
         return cur.lastrowid
 
     def session(self, sid):

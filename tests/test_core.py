@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 
 import numpy as np
 import pytest
@@ -259,10 +260,49 @@ def test_download_errors_read_like_a_person_wrote_them():
     assert fetch.friendly("ERROR: weird").startswith("Could not get this stream: weird")
 
 
-def test_low_disk_stops_the_download_before_it_starts(tmp_path):
+GB = 1e9
+
+
+def spaces(**drives):
+    return lambda folder: drives[os.path.abspath(folder)[0].lower()] * GB
+
+
+def test_a_stream_needs_room_for_both_copies():
+    # 5 GB would have "fit" on a drive with 8 GB free, but joining it would then fill the disk.
     with pytest.raises(ValueError, match="GB"):
-        fetch.check_space(str(tmp_path), 10 ** 15)
-    fetch.check_space(str(tmp_path), 0)
+        fetch.choose_folder("C:\\Videos", 5 * GB, drives=["C:\\"], free=spaces(c=8))
+    assert fetch.choose_folder("C:\\Videos", 5 * GB, drives=["C:\\"], free=spaces(c=30)) == "C:\\Videos"
+
+
+def test_a_full_drive_moves_the_download_to_a_drive_with_room():
+    folder = fetch.choose_folder("C:\\Videos", 5 * GB, drives=["C:\\", "D:\\"], free=spaces(c=2, d=120))
+    assert folder == os.path.join("D:\\", "Clip Studio", "Past streams")
+
+
+def test_no_drive_with_room_stops_before_downloading():
+    with pytest.raises(ValueError, match="free space"):
+        fetch.choose_folder("C:\\Videos", 50 * GB, drives=["C:\\", "D:\\"], free=spaces(c=2, d=20))
+
+
+def test_parts_already_on_a_drive_win_so_it_can_resume(tmp_path):
+    (tmp_path / "Stream [abc].f299.mp4").write_bytes(b"x")
+    folder = fetch.choose_folder(str(tmp_path), 5 * GB, "abc", drives=[], free=lambda f: 11 * GB)
+    assert folder == str(tmp_path)      # 11 GB is too little from scratch, but enough to finish the join
+
+
+def test_size_is_estimated_when_the_platform_hides_it():
+    assert fetch.size_of({"duration": 100, "requested_formats": [{"tbr": 800}, {"filesize": 500}]}) == 10_000_500
+    assert fetch.size_of({"duration": 100}) == 100 * fetch.TYPICAL_BYTES_PER_SECOND
+
+
+def test_failed_join_leftover_is_removed_but_finished_parts_stay(tmp_path):
+    keep = tmp_path / "S [abc].f299.mp4"
+    junk = tmp_path / "S [abc].temp.mp4"
+    other = tmp_path / "Other [zzz].temp.mp4"
+    for f in (keep, junk, other):
+        f.write_bytes(b"x")
+    fetch.clean_temp(str(tmp_path), "abc")
+    assert keep.exists() and other.exists() and not junk.exists()
 
 
 def test_youtube_chat_replay_parses(tmp_path):
@@ -290,3 +330,14 @@ def test_old_libraries_gain_the_link_column(tmp_path):
     lib = Library(path)
     assert lib.session(lib.add_session("s", "", url="https://x"))["url"] == "https://x"
     lib.close()
+
+
+def test_a_chosen_folder_is_never_swapped_for_another_drive():
+    with pytest.raises(ValueError, match="Choose another folder"):
+        fetch.choose_folder("C:\\Mine", 5 * GB, drives=[], free=spaces(c=8))
+    assert fetch.choose_folder("C:\\Mine", 5 * GB, drives=[], free=spaces(c=30)) == "C:\\Mine"
+
+
+def test_a_session_remembers_its_folder(library):
+    sid = library.add_session("s", "", url="https://x", folder="D:\\Streams")
+    assert library.session(sid)["folder"] == "D:\\Streams"

@@ -296,9 +296,48 @@ class Pipeline(QWidget):
             p.drawText(QRectF(c.x() - 40, c.y() + 12, 80, 18), Qt.AlignmentFlag.AlignCenter, label)
 
 
+class FolderRow(QWidget):
+    """Shows a folder with a Choose button. An empty value means the app's automatic choice."""
+    changed = Signal(str)
+
+    def __init__(self, title, empty_text, can_reset=True):
+        super().__init__()
+        self.title, self.empty_text = title, empty_text
+        self.path = ""
+        self.text = QLineEdit(readOnly=True, placeholderText=empty_text)
+        self.text.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        pick = Button("Choose", "folder")
+        pick.clicked.connect(self.pick)
+        self.reset = Button("Automatic", flat=True)
+        self.reset.clicked.connect(lambda: self.set(""))
+        self.reset.setVisible(False)
+        self.can_reset = can_reset
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        row.addWidget(self.text, 1)
+        row.addWidget(pick)
+        row.addWidget(self.reset)
+
+    def pick(self):
+        start = self.path or os.path.expanduser("~")
+        path = QFileDialog.getExistingDirectory(self, self.title, start)
+        if path:
+            self.set(os.path.normpath(path))
+
+    def load(self, path):
+        self.path = path
+        self.text.setText(path)
+        self.reset.setVisible(bool(path) and self.can_reset)
+
+    def set(self, path):
+        self.load(path)
+        self.changed.emit(path)
+
+
 class LinkSheet(QWidget):
     """Slides up over a dimmed window to take a past stream's link."""
-    submitted = Signal(str)
+    submitted = Signal(str, str)
     TAGS = {"youtube": "YouTube: video plus chat replay", "twitch": "Twitch: video. Add chat with a chat file later",
             "kick": "Kick: video. Past chat is not available"}
 
@@ -307,7 +346,7 @@ class LinkSheet(QWidget):
         self.t = 0.0
         self.card = QWidget(self)
         self.card.setObjectName("sheet")
-        self.card.setFixedSize(560, 300)
+        self.card.setFixedSize(600, 348)
         self.card.paintEvent = self.paint_card
         title = QLabel("Clip a past stream")
         title.setObjectName("h1")
@@ -321,6 +360,9 @@ class LinkSheet(QWidget):
         self.tag.setObjectName("why")
         self.rights = Toggle("This is my own stream, or I have permission to use it")
         self.rights.toggled.connect(self.check)
+        self.folder = FolderRow("Save this stream to", "Automatic: a drive with enough space")
+        where = QLabel("Save to")
+        where.setObjectName("h2")
         self.go = Button("Get clips", "spark", primary=True)
         self.go.clicked.connect(self.submit)
         no = Button("Cancel", flat=True)
@@ -332,7 +374,7 @@ class LinkSheet(QWidget):
         col = QVBoxLayout(self.card)
         col.setContentsMargins(26, 22, 26, 16)
         col.setSpacing(8)
-        for w in (title, tip, self.url, self.tag, self.rights):
+        for w in (title, tip, self.url, self.tag, self.rights, where, self.folder):
             col.addWidget(w)
         col.addStretch()
         col.addLayout(row)
@@ -343,8 +385,9 @@ class LinkSheet(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         panel(p, QRectF(self.card.rect()).adjusted(1, 1, -1, -1), 18, QColor(22, 14, 54, 252), alpha(T.A2, 170))
 
-    def present(self):
+    def present(self, folder=""):
         self.setGeometry(self.parent().rect())
+        self.folder.load(folder)
         self.url.clear()
         self.rights.setChecked(False)
         self.check()
@@ -376,7 +419,7 @@ class LinkSheet(QWidget):
 
     def submit(self):
         if self.go.isEnabled():
-            self.submitted.emit(self.url.text().strip())
+            self.submitted.emit(self.url.text().strip(), self.folder.path)
             self.dismiss()
 
     def mousePressEvent(self, event):
@@ -403,7 +446,7 @@ class StreamsPage(QWidget):
         sub.setObjectName("mute")
         self.sub = sub
         link = ActionTile("link", "Clip a past stream", "Paste a YouTube, Twitch or Kick link")
-        link.clicked.connect(lambda: self.w.sheet.present())
+        link.clicked.connect(lambda: self.w.sheet.present(self.w.settings.get("downloads_folder")))
         file = ActionTile("file", "Add a recording", "Use a video file already on this PC")
         file.clicked.connect(self.import_video)
         tiles = QHBoxLayout()
@@ -430,7 +473,7 @@ class StreamsPage(QWidget):
         page.addWidget(sub)
         page.addLayout(tiles)
         page.addWidget(self.pipeline)
-        page.addWidget(self.empty)
+        page.addWidget(self.empty, 1)
         page.addWidget(self.scroll, 1)
         self.columns = 0
 
@@ -572,22 +615,29 @@ class SettingsPage(QWidget):
         clips.form.addRow("Usual clip length", self.length)
         look = Section("Look")
         look.form.addRow("", self.motion)
+        self.downloads = FolderRow("Save past streams to", "Automatic: a drive with enough space")
+        self.downloads.load(s.get("downloads_folder"))
+        self.downloads.changed.connect(lambda path: self.folder_changed("downloads_folder", path))
+        self.exports = FolderRow("Save clips to", exports_dir())
+        self.exports.load(s.get("exports_folder"))
+        self.exports.changed.connect(lambda path: self.folder_changed("exports_folder", path))
+        folders = Section("Folders")
+        folders.form.addRow("Past stream downloads", self.downloads)
+        folders.form.addRow("Exported clips", self.exports)
         save = Button("Save", "check", primary=True)
         save.clicked.connect(self.save)
-        where = QLabel("Clips are saved to " + exports_dir() + ". Analysis happens on this PC.")
-        where.setObjectName("mute")
         grid = QGridLayout()
         grid.setSpacing(12)
         grid.addWidget(obs, 0, 0)
         grid.addWidget(live, 1, 0)
         grid.addWidget(clips, 0, 1)
         grid.addWidget(look, 1, 1)
+        grid.addWidget(folders, 2, 0, 1, 2)
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 8, 0)
         col.setSpacing(10)
         col.addLayout(grid)
-        col.addWidget(where)
         col.addWidget(save, 0, Qt.AlignmentFlag.AlignLeft)
         col.addStretch()
         scroll = QScrollArea()
@@ -597,6 +647,10 @@ class SettingsPage(QWidget):
         page.setContentsMargins(24, 20, 24, 14)
         page.addWidget(title)
         page.addWidget(scroll, 1)
+
+    def folder_changed(self, key, path):
+        self.w.settings.set(key, path)
+        self.w.toast("Folder saved" if path else "Back to automatic")
 
     def save(self):
         for key, value in (("obs_host", self.host.text().strip()), ("obs_port", self.port.value()),
@@ -753,8 +807,8 @@ class MainWindow(QMainWindow):
             self.nav.set_link("Marked a moment at " + clock(t), True)
 
     # ---- jobs
-    def add_link(self, url):
-        sid = self.library.add_session("Getting stream details...", "", url=url)
+    def add_link(self, url, folder):
+        sid = self.library.add_session("Getting stream details...", "", url=url, folder=folder)
         self.analyze(sid)
 
     def analyze(self, sid):

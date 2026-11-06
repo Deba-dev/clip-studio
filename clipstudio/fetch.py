@@ -8,6 +8,8 @@ from .paths import tool
 
 FORMAT = ("bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/"
           "b[height<=1080]/bv*+ba/b")
+KEEP_FREE = 5e9                     # never leave a drive with less than this
+TYPICAL_BYTES_PER_SECOND = 700_000
 PLATFORMS = (("youtube", re.compile(r"^https?://(www\.|m\.)?(youtube\.com/(watch|live/)|youtu\.be/)", re.I)),
              ("twitch", re.compile(r"^https?://(www\.|m\.)?twitch\.tv/(videos/\d+|\w+/video/\d+)", re.I)),
              ("kick", re.compile(r"^https?://(www\.)?kick\.com/[\w-]+/videos/[\w-]+|"
@@ -22,7 +24,7 @@ HELP = (("private video", "This video is private. Make it unlisted or public, th
         ("video unavailable", "This video is unavailable."),
         ("404", "That link was not found. The platform may have deleted this past stream."),
         ("unsupported url", "That link is not a past stream on YouTube, Twitch or Kick."),
-        ("no space left", "The disk is full."))
+        ("no space left", "The disk is full. Free some space, then try again."))
 
 
 def platform_of(url):
@@ -64,15 +66,73 @@ def inspect(url):
 
 
 def size_of(info):
-    formats = info.get("requested_formats") or [info]
-    return sum(f.get("filesize") or f.get("filesize_approx") or 0 for f in formats)
+    """Platforms often leave out the size of long streams, so fall back to bitrate, then to a typical 1080p rate."""
+    duration = info.get("duration") or 0
+    total = 0
+    for f in info.get("requested_formats") or [info]:
+        total += f.get("filesize") or f.get("filesize_approx") or (f.get("tbr") or 0) * 125 * duration
+    return total or duration * TYPICAL_BYTES_PER_SECOND
 
 
-def check_space(folder, needed):
-    free = shutil.disk_usage(folder).free
-    if needed and free < needed * 1.15:
-        raise ValueError("This stream needs about %.1f GB and only %.1f GB is free on that drive." % (
-            needed / 1e9, free / 1e9))
+def fixed_drives():
+    """Local hard drives and SSDs only: never USB sticks, network shares or optical drives."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    kernel = ctypes.windll.kernel32
+    mask = kernel.GetLogicalDrives()
+    roots = ["%s:\\" % chr(65 + i) for i in range(26) if mask >> i & 1]
+    return [r for r in roots if kernel.GetDriveTypeW(r) == 3]
+
+
+def has_parts(folder, video_id):
+    try:
+        return any("[%s]" % video_id in name for name in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def free_space(folder):
+    path = os.path.abspath(folder)
+    while not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return shutil.disk_usage(path).free
+
+
+def choose_folder(preferred, size, video_id="", drives=None, free=free_space):
+    """Finds room for a download without ever filling a drive.
+
+    Video and audio are joined at the end, so both copies exist at once: a stream needs about twice its size, and a
+    margin stays free so Windows keeps working. A folder already holding this stream's parts wins, so it can resume.
+    """
+    drives = fixed_drives() if drives is None else drives
+    folders = [preferred] + [os.path.join(d, "Clip Studio", "Past streams") for d in drives
+                             if not os.path.abspath(preferred).lower().startswith(d.lower())]
+    for folder in folders:
+        if video_id and has_parts(folder, video_id) and free(folder) >= size * 1.1 + KEEP_FREE:
+            return folder
+    need = size * 2.1 + KEEP_FREE
+    for folder in folders:
+        if free(folder) >= need:
+            return folder
+    if len(folders) == 1:
+        raise ValueError("This stream needs about %.0f GB of free space, but only %.0f GB is free in %s. "
+                         "Choose another folder." % (need / 1e9, free(folders[0]) / 1e9, folders[0]))
+    raise ValueError("This stream needs about %.0f GB of free space and no drive has that much. Free some space, "
+                     "then try again." % (need / 1e9))
+
+
+def clean_temp(folder, video_id):
+    """A half-joined file is useless and huge. Finished video and audio parts stay, so a retry skips the download."""
+    for name in os.listdir(folder):
+        if "[%s]" % video_id in name and ".temp." in name:
+            try:
+                os.remove(os.path.join(folder, name))
+            except OSError:
+                pass
 
 
 def describe(done, total, eta):

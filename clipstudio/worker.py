@@ -9,6 +9,7 @@ import sys
 from . import analyze, fetch, render
 from .db import Library
 from .paths import downloads_dir, exports_dir
+from .settings import Settings
 
 
 def lower_priority():
@@ -46,13 +47,20 @@ def do_fetch(library, sid):
     """Download a past stream, pick up its chat replay if there is one, then analyze it as usual."""
     session = library.session(sid)
     url = session["url"]
-    folder = downloads_dir()
+    folder = None
+    video_id = ""
     try:
         say(stage="Downloading", value=0, note="Checking the link")
         info = fetch.inspect(url)
         library.update_session(sid, name=(info.get("title") or session["name"])[:120],
                                duration=float(info.get("duration") or 0))
-        fetch.check_space(folder, fetch.size_of(info))
+        video_id = info.get("id") or ""
+        # A folder the user picked is a promise: it is used or the job stops. Only automatic mode may look elsewhere.
+        chosen = session["folder"] or Settings().get("downloads_folder")
+        folder = fetch.choose_folder(chosen or downloads_dir(), fetch.size_of(info), video_id,
+                                     drives=[] if chosen else None)
+        os.makedirs(folder, exist_ok=True)
+        say(stage="Downloading", value=0, note="Saving to " + folder)
         path = fetch.download(url, folder, lambda v, note: say(stage="Downloading", value=round(v, 3), note=note))
         library.update_session(sid, source=path)
         if fetch.platform_of(url) == "youtube" and not library.chat(sid):
@@ -65,6 +73,10 @@ def do_fetch(library, sid):
                 pass            # a stream with no chat replay is still a stream
     except Exception as e:
         message = str(e) if isinstance(e, ValueError) else fetch.friendly(e)
+        if folder:
+            fetch.clean_temp(folder, video_id)
+            if fetch.free_space(folder) < 1e9:
+                message = "The drive ran out of space. Free some space, then try again."
         library.update_session(sid, status="failed", error=message[:300])
         say(error=message[:300])
         return 1
@@ -77,7 +89,9 @@ def do_export(library, cid):
     session = library.session(clip["session"])
     try:
         info = probe(session["source"])
-        path = render.export_clip(session["source"], clip, (info["width"], info["height"]), exports_dir(),
+        folder = Settings().get("exports_folder") or exports_dir()
+        os.makedirs(folder, exist_ok=True)
+        path = render.export_clip(session["source"], clip, (info["width"], info["height"]), folder,
                                   parse_facecam(session["facecam"]),
                                   lambda v: say(stage="Exporting", value=round(v, 3)))
         library.update_clip(cid, state="exported", exported=path)
