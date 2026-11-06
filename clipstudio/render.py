@@ -15,6 +15,7 @@ ENCODERS = [
     ("libx264", ["-preset", "veryfast", "-crf", "20"]),
     ("libopenh264", ["-b:v", "8M"]),
 ]
+FILTERS = ("split", "crop", "scale", "vstack", "setsar", "overlay", "gblur", "colorchannelmixer", "subtitles")
 _chosen = None
 
 
@@ -44,7 +45,10 @@ def clean_name(text):
 
 
 def layout_filter(layout, size, facecam=None):
-    """Builds the video graph. Output pad is [v]. facecam is (x, y, w, h) in source pixels."""
+    """Builds the video graph. Output pad is [v]. facecam is (x, y, w, h) in source pixels.
+
+    Only LGPL filters may appear here: the released app ships an LGPL FFmpeg, which has no boxblur or eq.
+    """
     width, height = size
     if layout == "auto":
         layout = "stack" if facecam else "blur"
@@ -59,7 +63,8 @@ def layout_filter(layout, size, facecam=None):
     if layout == "crop":
         return "[0:v]scale=-2:1920,crop=1080:1920,setsar=1[v]"
     return ("[0:v]split=2[a][b];"
-            "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=24:2,eq=brightness=-0.12[bg];"
+            "[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,gblur=sigma=24,"
+            "colorchannelmixer=rr=0.8:gg=0.8:bb=0.8[bg];"
             "[b]scale=1080:-2[fg];"
             "[bg][fg]overlay=0:(H-h)/2,setsar=1[v]")
 

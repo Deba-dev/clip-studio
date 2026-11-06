@@ -97,7 +97,7 @@ def do_export(library, cid):
         library.update_clip(cid, state="exported", exported=path)
         say(done=True, path=path)
     except Exception as e:
-        say(error=str(e)[:300])
+        say(error=str(e)[-300:])        # FFmpeg puts the actual reason at the end
         return 1
     return 0
 

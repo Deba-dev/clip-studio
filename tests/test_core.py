@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 
 import numpy as np
 import pytest
@@ -163,7 +164,14 @@ def test_export_names_are_safe():
 def test_stack_layout_uses_the_facecam_rectangle():
     graph = render.layout_filter("auto", (1920, 1080), (1500, 700, 400, 300))
     assert "crop=400:300:1500:700" in graph and "vstack" in graph and graph.endswith("[v]")
-    assert "boxblur" in render.layout_filter("auto", (1920, 1080))
+    assert "gblur" in render.layout_filter("auto", (1920, 1080))
+
+
+@pytest.mark.parametrize("layout,cam", [("stack", (0, 0, 300, 200)), ("blur", None), ("crop", None)])
+def test_layouts_use_only_filters_the_released_ffmpeg_has(layout, cam):
+    graph = render.layout_filter(layout, (1920, 1080), cam)
+    names = set(re.findall(r"(?:^|[,;\]])([a-z]+)(?==|,|\[)", graph))
+    assert names and names <= set(render.FILTERS), names - set(render.FILTERS)
 
 
 def test_obs_auth_matches_the_protocol():
