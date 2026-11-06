@@ -26,3 +26,27 @@ def exports_dir():
     path = os.environ.get("CLIPSTUDIO_EXPORTS") or os.path.join(os.path.expanduser("~"), "Videos", "Clip Studio")
     os.makedirs(path, exist_ok=True)
     return path
+
+
+def downloads_dir():
+    path = os.path.join(exports_dir(), "Past streams")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _sub(name):
+    path = os.path.join(data_dir(), name)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def session_thumb(sid):
+    return os.path.join(_sub("thumbs"), "s%d.jpg" % sid)
+
+
+def clip_thumb(sid, peak):
+    return os.path.join(_sub("thumbs"), "s%d_%d.jpg" % (sid, int(peak)))
+
+
+def signals_file(sid):
+    return os.path.join(_sub("signals"), "s%d.npz" % sid)

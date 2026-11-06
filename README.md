@@ -1,6 +1,6 @@
 # Clip Studio
 
-Stream normally. When OBS stops recording, Clip Studio builds a ranked shortlist of your best moments on your own PC. You review them, fix a trim or a word, and export 9:16 clips with captions.
+Stream normally. When OBS stops recording, Clip Studio builds a ranked shortlist of your best moments on your own PC. You can also paste the link to a finished YouTube, Twitch or Kick stream. You review the shortlist, fix a trim or a word, and export 9:16 clips with captions.
 
 The market research behind these decisions is in [reports/Stream clipping tools and gaps.md](reports/Stream%20clipping%20tools%20and%20gaps.md).
 
@@ -10,7 +10,7 @@ The market research behind these decisions is in [reports/Stream clipping tools 
 2. **After the stream:** analysis waits until the stream has ended, then runs in a low-priority background process.
    - Pass 1 ranks the whole stream from audio, chat and markers.
    - Pass 2 runs speech recognition only on the shortlisted windows, which keeps it fast without a GPU.
-3. **Review desk:** each clip says why it was picked. Trim, add setup, edit captions and undo anything.
+3. **Review desk:** each clip says why it was picked. A live phone preview shows the real layout and captions. Drag handles that snap to words, edit captions and undo anything.
 4. **Export:** clips render at 1080x1920 with a hardware encoder when one works.
 
 ## Run it
@@ -47,7 +47,11 @@ The first analysis downloads the speech model, about 480 MB for the default size
 | `clipstudio/obs.py` | obs-websocket v5 client and session tracking |
 | `clipstudio/chat.py` | Twitch, Kick and YouTube chat logging, chat file import |
 | `clipstudio/worker.py` | The separate background process |
-| `clipstudio/ui/` | PySide6 interface |
+| `clipstudio/fetch.py` | Downloads past streams and YouTube chat replay |
+| `clipstudio/ui/fx.py` | Motion system, icons and custom controls |
+| `clipstudio/ui/phone.py` | Live 9:16 preview |
+| `clipstudio/ui/timeline.py` | Activity map and trim bar |
+| `clipstudio/ui/` | The rest of the PySide6 interface |
 
 ## Before a public release
 
@@ -55,3 +59,4 @@ The first analysis downloads the speech model, about 480 MB for the default size
 - Get legal review of H.264/AAC patents and CUDA redistribution.
 - Check the name: "Clip Studio" is close to Clip Studio Paint, and another project uses `clips-studio`.
 - Review the terms for the unofficial chat connections, especially Kick's.
+- Review link downloads with a lawyer. YouTube's and Kick's terms restrict downloading, so the app asks users to confirm they own the stream or have permission.

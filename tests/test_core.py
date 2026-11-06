@@ -1,10 +1,11 @@
 import base64
 import hashlib
+import json
 
 import numpy as np
 import pytest
 
-from clipstudio import captions, chat, detect, render
+from clipstudio import captions, chat, detect, fetch, render
 from clipstudio.db import Library
 from clipstudio.obs import RecordingTracker, auth_string
 from clipstudio.roman import to_roman
@@ -241,3 +242,51 @@ def test_dead_air_before_the_first_word_is_trimmed():
     words = [{"w": "wow", "s": 230.0, "e": 230.5}, {"w": "shot", "s": 231.0, "e": 231.5}]
     pick = {"peak": 230.0, "start": 197.0, "end": 242.0, "score": 3.0, "reasons": ["x"]}
     assert detect.refine_with_words(pick, words)["start"] == 224.0
+
+
+@pytest.mark.parametrize("url,name", [
+    ("https://www.youtube.com/watch?v=abcdefghijk", "youtube"), ("https://youtu.be/abcdefghijk", "youtube"),
+    ("https://www.youtube.com/live/abcdefghijk", "youtube"), ("https://www.twitch.tv/videos/123456", "twitch"),
+    ("https://kick.com/somebody/videos/abc-123", "kick"), ("https://kick.com/video/abc-123", "kick"),
+    ("https://example.com/video", ""), ("not a link", ""), ("https://www.twitch.tv/somebody", "")])
+def test_platform_from_link(url, name):
+    assert fetch.platform_of(url) == name
+
+
+def test_download_errors_read_like_a_person_wrote_them():
+    assert "private" in fetch.friendly("ERROR: [youtube] abc: Private video. Sign in")
+    assert "subscribers" in fetch.friendly("ERROR: [twitch] 1: This video is only available to subscribers")
+    assert fetch.friendly("ERROR: weird").startswith("Could not get this stream: weird")
+
+
+def test_low_disk_stops_the_download_before_it_starts(tmp_path):
+    with pytest.raises(ValueError, match="GB"):
+        fetch.check_space(str(tmp_path), 10 ** 15)
+    fetch.check_space(str(tmp_path), 0)
+
+
+def test_youtube_chat_replay_parses(tmp_path):
+    message = {"addChatItemAction": {"item": {"liveChatTextMessageRenderer": {
+        "message": {"runs": [{"text": "no way "}, {"emoji": {"shortcuts": [":fire:"]}}]},
+        "authorName": {"simpleText": "amy"}}}}}
+    good = {"replayChatItemAction": {"actions": [message], "videoOffsetTimeMsec": "12500"}}
+    before = {"replayChatItemAction": {"actions": [message], "videoOffsetTimeMsec": "-3000"}}
+    sticker = {"replayChatItemAction": {"actions": [{"addChatItemAction": {"item": {"x": {}}}}],
+                                        "videoOffsetTimeMsec": "1"}}
+    path = tmp_path / "c.json"
+    path.write_text("\n".join(json.dumps(x) for x in (good, before, sticker)) + "\nnot json\n", encoding="utf-8")
+    assert fetch.parse_live_chat(str(path)) == [(12.5, "youtube", "amy", "no way :fire:")]
+
+
+def test_old_libraries_gain_the_link_column(tmp_path):
+    import sqlite3
+    path = str(tmp_path / "old.db")
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL, "
+                "created REAL NOT NULL, record_start REAL, duration REAL DEFAULT 0, status TEXT DEFAULT 'new', "
+                "error TEXT DEFAULT '', chat_lag REAL, facecam TEXT DEFAULT '', language TEXT DEFAULT '')")
+    con.commit()
+    con.close()
+    lib = Library(path)
+    assert lib.session(lib.add_session("s", "", url="https://x"))["url"] == "https://x"
+    lib.close()

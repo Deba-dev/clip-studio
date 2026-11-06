@@ -15,7 +15,7 @@ def worker_command(job, target):
 
 
 class Jobs(QObject):
-    progress = Signal(str, float)           # stage, 0..1
+    progress = Signal(str, float, str)      # stage, 0..1, note
     finished = Signal(str, int, dict)       # job, target, final message
     idle = Signal()
 
@@ -27,6 +27,7 @@ class Jobs(QObject):
         self.final = {}
         self.buffer = b""
         self.db_path = db_path
+        self.cancelled = False
 
     def add(self, job, target):
         if (job, target) == self.current or (job, target) in self.queue:
@@ -37,9 +38,16 @@ class Jobs(QObject):
     def busy(self):
         return self.proc is not None
 
+    def cancel(self):
+        """Stops the running job and lets the queue carry on. Downloads resume later from where they stopped."""
+        if self.proc:
+            self.cancelled = True
+            self.proc.kill()
+
     def stop(self):
         self.queue.clear()
         if self.proc:
+            self.cancelled = True
             self.proc.kill()
             self.proc.waitForFinished(3000)
 
@@ -49,6 +57,7 @@ class Jobs(QObject):
         self.current = self.queue.popleft()
         self.final = {}
         self.buffer = b""
+        self.cancelled = False
         self.proc = QProcess(self)
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONIOENCODING", "utf-8")
@@ -75,7 +84,7 @@ class Jobs(QObject):
             except ValueError:
                 continue            # libraries may print their own lines
             if "stage" in message:
-                self.progress.emit(message["stage"], float(message.get("value", 0)))
+                self.progress.emit(message["stage"], float(message.get("value", 0)), message.get("note", ""))
             else:
                 self.final = message
 
@@ -83,7 +92,9 @@ class Jobs(QObject):
         if self.proc is None:
             return
         self._read()
-        if not self.final:
+        if self.cancelled:
+            self.final = {"cancelled": True}
+        elif not self.final:
             self.final = {"error": "The background worker stopped unexpectedly."}
         job, target = self.current
         self.proc.deleteLater()

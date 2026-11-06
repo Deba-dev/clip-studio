@@ -6,9 +6,9 @@ import json
 import os
 import sys
 
-from . import analyze, render
+from . import analyze, fetch, render
 from .db import Library
-from .paths import exports_dir
+from .paths import downloads_dir, exports_dir
 
 
 def lower_priority():
@@ -40,6 +40,35 @@ def do_analyze(library, sid):
         say(error=str(e)[:300])
         return 1
     return 0
+
+
+def do_fetch(library, sid):
+    """Download a past stream, pick up its chat replay if there is one, then analyze it as usual."""
+    session = library.session(sid)
+    url = session["url"]
+    folder = downloads_dir()
+    try:
+        say(stage="Downloading", value=0, note="Checking the link")
+        info = fetch.inspect(url)
+        library.update_session(sid, name=(info.get("title") or session["name"])[:120],
+                               duration=float(info.get("duration") or 0))
+        fetch.check_space(folder, fetch.size_of(info))
+        path = fetch.download(url, folder, lambda v, note: say(stage="Downloading", value=round(v, 3), note=note))
+        library.update_session(sid, source=path)
+        if fetch.platform_of(url) == "youtube" and not library.chat(sid):
+            say(stage="Getting chat replay", value=0, note="")
+            try:
+                rows = fetch.youtube_chat(url, folder)
+                if rows:
+                    library.add_chat(sid, rows)
+            except Exception:
+                pass            # a stream with no chat replay is still a stream
+    except Exception as e:
+        message = str(e) if isinstance(e, ValueError) else fetch.friendly(e)
+        library.update_session(sid, status="failed", error=message[:300])
+        say(error=message[:300])
+        return 1
+    return do_analyze(library, sid)
 
 
 def do_export(library, cid):
@@ -78,4 +107,4 @@ def main(args):
     attach_streams()
     library = Library(os.environ.get("CLIPSTUDIO_DB") or None)
     job, target = args[0], int(args[1])
-    return do_analyze(library, target) if job == "analyze" else do_export(library, target)
+    return {"analyze": do_analyze, "fetch": do_fetch, "export": do_export}[job](library, target)

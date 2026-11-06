@@ -35,15 +35,18 @@ class Library:
         self.con.execute("PRAGMA journal_mode=WAL")
         self.con.execute("PRAGMA foreign_keys=ON")
         self.con.executescript(SCHEMA)
+        columns = [r["name"] for r in self.con.execute("PRAGMA table_info(sessions)")]
+        if "url" not in columns:        # libraries made by 0.1.0
+            self.con.execute("ALTER TABLE sessions ADD COLUMN url TEXT DEFAULT ''")
 
     def close(self):
         self.con.close()
 
     # ---- sessions
-    def add_session(self, name, source, record_start=None):
+    def add_session(self, name, source, record_start=None, url=""):
         with self.con:
-            cur = self.con.execute("INSERT INTO sessions(name, source, created, record_start) VALUES (?,?,?,?)",
-                                   (name, source, time.time(), record_start))
+            cur = self.con.execute("INSERT INTO sessions(name, source, created, record_start, url) VALUES (?,?,?,?,?)",
+                                   (name, source, time.time(), record_start, url))
         return cur.lastrowid
 
     def session(self, sid):

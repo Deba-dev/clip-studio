@@ -74,6 +74,7 @@ def audio_window(source, start, length, track=0):
     return np.frombuffer(out.stdout[:len(out.stdout) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
 
 
-def frame_png(source, t, path):
-    cmd = [tool("ffmpeg"), "-v", "error", "-y", "-ss", "%.3f" % t, *input_args(source), "-frames:v", "1", path]
+def frame_png(source, t, path, width=0):
+    scale = ["-vf", "scale=%d:-2" % width, "-q:v", "4"] if width else []
+    cmd = [tool("ffmpeg"), "-v", "error", "-y", "-ss", "%.3f" % t, *input_args(source), "-frames:v", "1", *scale, path]
     return subprocess.run(cmd, capture_output=True, creationflags=HIDE).returncode == 0

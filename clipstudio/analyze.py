@@ -3,10 +3,26 @@
 1. Audio, chat and hotkeys rank the whole stream in about the time FFmpeg takes to read the audio.
 2. Speech recognition then runs only on the windows that made the shortlist, not on all 4 hours.
 """
+import shutil
+
+import numpy as np
+
 from . import detect, media
+from .paths import clip_thumb, session_thumb, signals_file
 from .settings import Settings
 
 WINDOW_PAD = 10         # extra audio around a candidate, so the transcript can find where the thought began
+
+
+def make_previews(source, sid, picks, report):
+    for i, pick in enumerate(picks):
+        report("Making previews", i / max(len(picks), 1))
+        media.frame_png(source, pick["peak"], clip_thumb(sid, pick["peak"]), 480)
+    if picks:
+        try:
+            shutil.copyfile(clip_thumb(sid, picks[0]["peak"]), session_thumb(sid))
+        except OSError:
+            pass
 
 
 def run(library, sid, settings=None, report=lambda stage, value: None, model=None):
@@ -19,11 +35,13 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
 
     report("Reading audio", 0.0)
     loud = media.loudness_per_second(source, on_progress=lambda v: report("Reading audio", v), total=info["duration"])
+    report("Finding moments", 0.5)
     parts = detect.score_moments(loud, library.chat(sid), library.markers(sid), info["duration"],
                                  lag=session["chat_lag"])
     limit = int(settings.get("max_clips"))
     picks = detect.pick_moments(parts, info["duration"], limit, int(settings.get("clip_length")))
     library.update_session(sid, chat_lag=parts["lag"])
+    np.savez_compressed(signals_file(sid), curve=parts["curve"].astype(np.float16), loud=loud.astype(np.float16))
 
     report("Loading speech model", 0.0)
     if model is None and picks:
@@ -47,6 +65,7 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
         done.append(pick)
     done.sort(key=lambda p: p["score"], reverse=True)
     library.replace_clips(sid, done[:limit])
+    make_previews(source, sid, done[:limit], report)
     library.update_session(sid, status="ready", language=language or "")
     library.purge_old_chat()
     report("Done", 1.0)

@@ -1,29 +1,44 @@
 """The ZunimiLabs dark violet look, shared with ChatDoom."""
+from PySide6.QtGui import QColor
+
+BG = QColor("#07051a")
+PANEL = QColor(20, 13, 48, 215)
+PANEL_HI = QColor(32, 21, 72, 235)
+LINE = QColor(124, 58, 237, 70)
+TEXT = QColor("#f6f4ff")
+MUTE = QColor("#aaa6cc")
+FAINT = QColor("#6d6890")
+A1 = QColor("#7c3aed")
+A2 = QColor("#c026d3")
+A3 = QColor("#3b82f6")
+GOOD = QColor("#34d399")
+WARN = QColor("#fbbf24")
+BAD = QColor("#f87171")
+CAPTION = QColor("#ffe100")
 
 QSS = """
 * { font-family: "Segoe UI", "Nirmala UI", sans-serif; font-size: 13px; color: #f6f4ff; }
-QMainWindow, QWidget#root, QDialog { background: #05031a; }
-QFrame#side { background: #0d0728; border-right: 1px solid rgba(124,58,237,0.35); }
-QLabel#logo { font-size: 19px; font-weight: 700; padding: 18px 16px 2px 16px; }
-QLabel#tag { color: #aaa6cc; font-size: 11px; padding: 0 16px 14px 16px; }
-QLabel#h1 { font-size: 21px; font-weight: 700; }
+QMainWindow, QDialog { background: #07051a; }
+QLabel { background: transparent; }
+QLabel#h1 { font-size: 24px; font-weight: 700; }
+QLabel#h2 { font-size: 14px; font-weight: 600; }
 QLabel#mute { color: #aaa6cc; }
-QLabel#why { color: #c9b8ff; font-size: 12px; }
-QPushButton { background: #1a1140; border: 1px solid rgba(124,58,237,0.45); border-radius: 8px; padding: 7px 13px; }
-QPushButton:hover { background: #2a1a63; }
-QPushButton:disabled { color: #6d6890; border-color: #2a2550; }
-QPushButton#primary { background: #7c3aed; border: none; font-weight: 600; }
-QPushButton#primary:hover { background: #9153f5; }
-QPushButton#primary:disabled { background: #2a2053; color: #8f8ab0; }
-QPushButton#nav { background: transparent; border: none; text-align: left; padding: 10px 16px; border-radius: 0; }
-QPushButton#nav:checked { background: rgba(124,58,237,0.28); border-left: 3px solid #c026d3; font-weight: 600; }
-QListWidget, QPlainTextEdit, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-    background: #0f0a2c; border: 1px solid #2a2053; border-radius: 8px; padding: 5px; }
-QListWidget::item { padding: 2px; border-radius: 6px; }
-QListWidget::item:selected { background: rgba(124,58,237,0.32); }
-QComboBox QAbstractItemView { background: #0f0a2c; selection-background-color: #7c3aed; }
-QProgressBar { background: #0f0a2c; border: none; border-radius: 4px; height: 8px; text-align: center; color: transparent; }
-QProgressBar::chunk { background: #c026d3; border-radius: 4px; }
-QCheckBox::indicator { width: 16px; height: 16px; }
-QVideoWidget { background: #000; }
+QLabel#why { color: #d6c9ff; font-size: 12px; }
+QPlainTextEdit, QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background: rgba(12,8,36,0.85); border: 1px solid rgba(124,58,237,0.32); border-radius: 9px; padding: 7px 9px;
+    selection-background-color: #7c3aed; }
+QPlainTextEdit:focus, QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #a855f7; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView { background: #120c2e; border: 1px solid #3a2a78; selection-background-color: #7c3aed; }
+QSpinBox::up-button, QSpinBox::down-button { width: 0; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 2px; }
+QScrollBar::handle:vertical { background: rgba(170,166,204,0.28); border-radius: 3px; min-height: 30px; }
+QScrollBar::handle:vertical:hover { background: rgba(192,38,211,0.7); }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical, QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical { background: none; height: 0; }
+QMenu { background: #140d30; border: 1px solid #3a2a78; border-radius: 10px; padding: 6px; }
+QMenu::item { padding: 7px 22px; border-radius: 6px; }
+QMenu::item:selected { background: #7c3aed; }
+QToolTip { background: #140d30; color: #f6f4ff; border: 1px solid #3a2a78; padding: 4px; }
 """
