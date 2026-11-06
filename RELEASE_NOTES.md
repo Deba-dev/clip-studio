@@ -1,6 +1,11 @@
-The first public test version of Clip Studio. It finds the best moments in your stream and turns them into vertical clips with captions, on your own PC.
+Clip Studio now updates itself. It finds the best moments in your stream and turns them into vertical clips with captions, on your own PC.
 
 **This is an early version.** Expect rough edges, and please report what breaks.
+
+## New in this version
+
+- **Built-in updates:** when a new version is out, a banner offers to download and install it. It never updates during a stream, a recording or a running job.
+- If you have version 0.3.1, install this version by hand once. After that, updating takes one click.
 
 ## What it does
 

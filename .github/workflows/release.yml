@@ -57,6 +57,41 @@ jobs:
           $version = ([regex]'VERSION = "([^"]+)"').Match((Get-Content clipstudio\version.py -Raw)).Groups[1].Value
           & $iscc "/DAppVersion=$version" installer.iss
           if ($LASTEXITCODE -ne 0) { throw "The installer could not be made" }
+      - name: Install it, then update over the running app
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\cs-install"
+          $exe = "$dir\ClipStudio.exe"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:CLIPSTUDIO_DATA = "$env:RUNNER_TEMP\cs-data"
+          function Run-Setup {
+            $p = Start-Process installer\ClipStudio-Setup.exe -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir" -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit(300000)) { throw "The installer did not finish" }
+            if ($p.ExitCode -ne 0) { throw "The installer failed ($($p.ExitCode))" }
+          }
+          function Wait-Running {
+            for ($i = 0; $i -lt 60; $i++) {
+              $found = Get-Process ClipStudio -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe } | Select-Object -First 1
+              if ($found) { return $found }
+              Start-Sleep 1
+            }
+            throw "The app did not start after installing"
+          }
+          Run-Setup
+          $first = Wait-Running
+          Write-Host "Installed and running, process $($first.Id)"
+          Start-Sleep 5
+          Run-Setup
+          $second = Wait-Running
+          if ($second.Id -eq $first.Id) { throw "The update did not close and reopen the app" }
+          Write-Host "Updated over the running app, new process $($second.Id)"
+          Stop-Process -Name ClipStudio -Force
+          Start-Sleep 2
+          $app = Start-Process $exe -ArgumentList "--selftest" -PassThru
+          $null = $app.Handle
+          if (-not $app.WaitForExit(120000)) { $app.Kill(); throw "The updated app did not finish starting" }
+          if ($app.ExitCode -ne 0) { throw "The updated app failed to start ($($app.ExitCode))" }
       - uses: actions/upload-artifact@v4
         with:
           name: ClipStudio-Setup

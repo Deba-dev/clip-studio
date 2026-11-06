@@ -5,7 +5,8 @@ import os
 import sys
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QEasingCurve, QObject, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QLinearGradient, QBrush, QPainter, QPen
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
@@ -14,6 +15,7 @@ from ..db import Library
 from ..obs import ObsClient, RecordingTracker
 from ..paths import exports_dir, session_thumb, tool
 from ..settings import Settings
+from ..updater import Updater
 from ..version import PRODUCT_NAME, VERSION
 from . import theme as T
 from .cards import WORKING, StreamCard, clock
@@ -203,6 +205,82 @@ class ActionTile(QWidget):
         p.setFont(font(12))
         text = p.fontMetrics().elidedText(self.text, Qt.TextElideMode.ElideRight, int(r.width() - 90))
         p.drawText(QRectF(box.right() + 14, r.y() + 37, r.width() - 86, 22), Qt.AlignmentFlag.AlignVCenter, text)
+
+
+class UpdateBanner(QWidget):
+    """Slides open when a new version is ready. It never installs anything by itself."""
+    update_now = Signal()
+    HEIGHT = 84
+
+    def __init__(self):
+        super().__init__()
+        self.t = 0.0
+        self.value = 0.0
+        self.title = ""
+        self.note = ""
+        self.setFixedHeight(0)
+        self.go = Button("Update now", "down", primary=True)
+        self.go.setParent(self)
+        self.go.clicked.connect(self.update_now)
+        self.later = Button("Later", flat=True)
+        self.later.setParent(self)
+        self.later.clicked.connect(self.close_banner)
+
+    def resizeEvent(self, event):
+        self.later.setGeometry(self.width() - 108, 18, 90, 44)
+        self.go.setGeometry(self.width() - 248, 18, 140, 44)
+
+    def present(self, version, notes):
+        self.title, self.note = "Version %s is ready" % version, notes
+        self.set_buttons(True)
+        tween(self, "t", 1, 320, on_step=self.grow)
+
+    def close_banner(self):
+        tween(self, "t", 0, 240, on_step=self.grow)
+
+    def grow(self):
+        self.setFixedHeight(int(self.HEIGHT * self.t))
+
+    def set_buttons(self, shown):
+        self.go.setVisible(shown)
+        self.later.setVisible(shown)
+
+    def show_progress(self, value, title="Downloading the update"):
+        self.set_buttons(False)
+        self.title = title
+        self.note = "%d%%" % (value * 100)
+        self.value = value
+        self.update()
+
+    def waiting(self):
+        self.show_progress(1.0, "The update will install when your stream or job finishes")
+        self.note = "It is downloaded and checked"
+        self.update()
+
+    def paintEvent(self, event):
+        if self.height() < 6:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setOpacity(self.t)
+        r = QRectF(self.rect()).adjusted(7, 2, -7, -6)
+        panel(p, r, 14, T.PANEL_HI, alpha(T.A3, 170))
+        draw_icon(p, "down", QRectF(r.x() + 18, r.center().y() - 12, 24, 24), T.TEXT, 2)
+        width = r.width() - (330 if self.go.isVisible() else 80)
+        p.setPen(T.TEXT)
+        p.setFont(font(14, QFont.Weight.DemiBold))
+        p.drawText(QRectF(r.x() + 56, r.y() + 12, width, 24), Qt.AlignmentFlag.AlignVCenter, self.title)
+        p.setPen(T.MUTE)
+        p.setFont(font(12))
+        note = p.fontMetrics().elidedText(self.note, Qt.TextElideMode.ElideRight, int(width))
+        p.drawText(QRectF(r.x() + 56, r.y() + 37, width, 20), Qt.AlignmentFlag.AlignVCenter, note)
+        if not self.go.isVisible():
+            bar = QRectF(r.x() + 56, r.bottom() - 12, r.width() - 80, 4)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(alpha(T.MUTE, 50))
+            p.drawRoundedRect(bar, 2, 2)
+            p.setBrush(T.A3)
+            p.drawRoundedRect(QRectF(bar.x(), bar.y(), bar.width() * self.value, 4), 2, 2)
 
 
 class Pipeline(QWidget):
@@ -454,6 +532,7 @@ class StreamsPage(QWidget):
         tiles.addWidget(link)
         tiles.addWidget(file)
         self.pipeline = Pipeline()
+        self.banner = UpdateBanner()
         self.empty = QLabel("Nothing here yet. Paste a past stream link above to get your first clips.")
         self.empty.setObjectName("mute")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -472,6 +551,7 @@ class StreamsPage(QWidget):
         page.addWidget(title)
         page.addWidget(sub)
         page.addLayout(tiles)
+        page.addWidget(self.banner)
         page.addWidget(self.pipeline)
         page.addWidget(self.empty, 1)
         page.addWidget(self.scroll, 1)
@@ -618,8 +698,11 @@ class SettingsPage(QWidget):
         clips.form.addRow("", self.roman)
         clips.form.addRow("Clips per stream", self.clips)
         clips.form.addRow("Usual clip length", self.length)
-        look = Section("Look")
+        look = Section("Look and updates")
         look.form.addRow("", self.motion)
+        self.check = Button("Check for updates", "down")
+        self.check.clicked.connect(lambda: self.w.updater.check(manual=True))
+        look.form.addRow("Version " + VERSION, self.check)
         self.downloads = FolderRow("Save past streams to", "Automatic: a drive with enough space")
         self.downloads.load(s.get("downloads_folder"))
         self.downloads.changed.connect(lambda path: self.folder_changed("downloads_folder", path))
@@ -682,6 +765,8 @@ class MainWindow(QMainWindow):
         self.jobs.progress.connect(self.on_progress)
         self.jobs.finished.connect(self.on_job_done)
         self.jobs.idle.connect(lambda: self.streams.pipeline.close_panel())
+        self.jobs.idle.connect(self.install_when_free)
+        MOTION.changed.connect(self.install_when_free)
         self.bridge = Bridge()
         self.bridge.event.connect(self.on_obs_event)
         self.bridge.status.connect(self.on_obs_status)
@@ -694,6 +779,14 @@ class MainWindow(QMainWindow):
         self.held = []
         self.flush = QTimer(self, interval=5000, timeout=self.logger.flush)
         self.flush.start()
+        self.updater = Updater(self.settings)
+        self.updater.found.connect(self.update_found)
+        self.updater.nothing.connect(lambda: self.toast("You have the latest version"))
+        self.updater.failed.connect(self.update_failed)
+        self.updater.progress.connect(lambda value: self.streams.banner.show_progress(value))
+        self.updater.ready.connect(self.update_ready)
+        self.update_info = None
+        self.update_path = ""
 
         root = Aurora()
         self.setCentralWidget(root)
@@ -702,6 +795,7 @@ class MainWindow(QMainWindow):
         self.stack = Pages()
         self.streams = StreamsPage(self)
         self.streams.pipeline.cancel.connect(self.cancel_job)
+        self.streams.banner.update_now.connect(self.start_update)
         self.review = ReviewPage(self.library)
         self.review.back.connect(lambda: self.goto(0))
         self.review.export.connect(lambda cid: self.jobs.add("export", cid))
@@ -721,6 +815,12 @@ class MainWindow(QMainWindow):
         if use_obs:
             self.connect_obs()
             self.register_hotkey()
+            problem = self.updater.after_start()
+            if problem:
+                QTimer.singleShot(1500, self, lambda: self.toast(problem, "bad"))
+            QTimer.singleShot(8000, self, self.background_check)
+            self.update_timer = QTimer(self, interval=6 * 3600 * 1000, timeout=self.background_check)
+            self.update_timer.start()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -757,6 +857,50 @@ class MainWindow(QMainWindow):
         self.centralWidget().calm = True    # the video is the star here, so the background holds still
         self.stack.go(self.review)
         self.review.open(sid)
+
+    # ---- updates
+    def is_free(self):
+        """Updating closes the app, so it only happens with no stream, recording or job in progress."""
+        return not self.jobs.busy() and not self.jobs.queue and not MOTION.live
+
+    def background_check(self):
+        if not MOTION.live and not self.update_path:
+            self.updater.check()
+
+    def update_found(self, info):
+        self.update_info = info
+        self.streams.banner.present(info["version"], info["notes"])
+        if self.stack.currentWidget() is self.settings_page:
+            self.goto(0)
+
+    def start_update(self):
+        if not self.update_info:
+            return
+        if not self.updater.frozen:     # a copy run from source has nothing to replace
+            QDesktopServices.openUrl(QUrl(self.update_info["page"]))
+            return
+        self.streams.banner.show_progress(0.0)
+        self.updater.install(self.update_info)
+
+    def update_failed(self, message):
+        self.toast(message, "bad")
+        if self.update_info:
+            self.streams.banner.present(self.update_info["version"], self.update_info["notes"])
+
+    def update_ready(self, path):
+        self.update_path = path
+        self.install_when_free()
+
+    def install_when_free(self):
+        if not self.update_path:
+            return
+        if not self.is_free():
+            self.streams.banner.waiting()
+            return
+        path, self.update_path = self.update_path, ""
+        self.updater.launch(path)
+        self.close()
+        QApplication.quit()
 
     # ---- OBS
     def connect_obs(self):

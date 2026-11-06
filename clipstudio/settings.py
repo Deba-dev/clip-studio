@@ -12,7 +12,7 @@ DEFAULTS = {
     "twitch_channel": "", "kick_channel": "", "youtube_video": "",
     "model": "small", "language": "", "roman_script": True,
     "max_clips": 12, "clip_length": 45, "reduce_motion": False,
-    "downloads_folder": "", "exports_folder": "",
+    "downloads_folder": "", "exports_folder": "", "update_pending": "",
 }
 SECRET = {"obs_password"}
 
