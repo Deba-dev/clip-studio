@@ -16,7 +16,7 @@ from ..paths import exports_dir, session_thumb, tool
 from ..settings import Settings
 from ..version import PRODUCT_NAME, VERSION
 from . import theme as T
-from .cards import StreamCard, clock
+from .cards import WORKING, StreamCard, clock
 from .fx import (MOTION, Aurora, Button, Confetti, Pages, Toast, Toggle, alpha, draw_icon, draw_ring, font, glow, mix,
                  panel, tween)
 from .jobs import Jobs
@@ -518,13 +518,18 @@ class StreamsPage(QWidget):
 
     def menu(self, sid, pos):
         m = QMenu(self)
-        for label, action in (("Try again" if not self.w.library.session(sid)["clip_count"] else "Analyze again",
-                               lambda: self.w.analyze(sid)),
-                              ("Add chat file", lambda: self.import_chat(sid)),
-                              ("Remove from list", lambda: self.remove(sid))):
+        busy = self.w.library.session(sid)["status"] in WORKING
+        again = "Analyze again" if self.w.library.clips(sid) else "Try again"
+        for label, action, enabled in ((again, lambda: self.w.analyze(sid), not busy),
+                                       ("Add chat file", lambda: self.import_chat(sid), not busy),
+                                       ("Remove from list", lambda: self.remove(sid), not busy)):
             item = QAction(label, m)
+            item.setEnabled(enabled)        # a stream being worked on must not be started twice or removed
             item.triggered.connect(action)
             m.addAction(item)
+        self.show_menu(m, pos)
+
+    def show_menu(self, m, pos):
         m.exec(pos)
 
     def import_video(self):
@@ -848,6 +853,8 @@ class MainWindow(QMainWindow):
                 if MOTION.on and self.stack.currentWidget() is self.review:
                     root = self.centralWidget()
                     Confetti(root, self.review.burst_origin(root))
+        elif "busy" in result:
+            self.toast("This stream is already being processed", "info")
         else:
             if "cancelled" in result:
                 self.library.update_session(target, status="stopped", error="Stopped. Use the card menu to continue.")

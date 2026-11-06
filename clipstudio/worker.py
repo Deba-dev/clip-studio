@@ -8,7 +8,7 @@ import sys
 
 from . import analyze, fetch, render
 from .db import Library
-from .paths import downloads_dir, exports_dir
+from .paths import data_dir, downloads_dir, exports_dir
 from .settings import Settings
 
 
@@ -102,6 +102,21 @@ def do_export(library, cid):
     return 0
 
 
+def hold_session(sid):
+    """One job per stream, even across app restarts. Windows drops the lock by itself if this process dies."""
+    if os.name != "nt":
+        return True
+    import msvcrt
+    handle = open(os.path.join(data_dir(), "session-%d.lock" % sid), "a+b")
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
 def attach_streams():
     """A windowed .exe starts with no sys.stdout even when the app gave it a pipe, so reconnect to that pipe."""
     if sys.stdout is None and sys.platform == "win32":
@@ -121,4 +136,8 @@ def main(args):
     attach_streams()
     library = Library(os.environ.get("CLIPSTUDIO_DB") or None)
     job, target = args[0], int(args[1])
+    lock = hold_session(target) if job in ("analyze", "fetch") else True
+    if not lock:
+        say(busy=True)
+        return 0
     return {"analyze": do_analyze, "fetch": do_fetch, "export": do_export}[job](library, target)

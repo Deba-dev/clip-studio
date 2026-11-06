@@ -341,3 +341,14 @@ def test_a_chosen_folder_is_never_swapped_for_another_drive():
 def test_a_session_remembers_its_folder(library):
     sid = library.add_session("s", "", url="https://x", folder="D:\\Streams")
     assert library.session(sid)["folder"] == "D:\\Streams"
+
+
+def test_one_job_per_stream(tmp_path, monkeypatch):
+    from clipstudio import worker
+    monkeypatch.setenv("CLIPSTUDIO_DATA", str(tmp_path))
+    first = worker.hold_session(7)
+    assert first
+    assert worker.hold_session(7) is None
+    assert worker.hold_session(8)
+    first.close()
+    assert worker.hold_session(7)
