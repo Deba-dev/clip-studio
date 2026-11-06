@@ -1,0 +1,81 @@
+"""Heavy work runs here, in its own low-priority process, so a native crash cannot take the app down.
+
+The app starts `main.py --worker analyze <session>` or `--worker export <clip>` and reads JSON lines from stdout.
+"""
+import json
+import os
+import sys
+
+from . import analyze, render
+from .db import Library
+from .paths import exports_dir
+
+
+def lower_priority():
+    if sys.platform == "win32":
+        import ctypes
+        k = ctypes.windll.kernel32
+        k.SetPriorityClass(k.GetCurrentProcess(), 0x00004000)   # BELOW_NORMAL_PRIORITY_CLASS
+
+
+def say(**message):
+    sys.stdout.write(json.dumps(message) + "\n")
+    sys.stdout.flush()
+
+
+def parse_facecam(text):
+    try:
+        values = [int(v) for v in text.split(",")]
+    except (AttributeError, ValueError):
+        return None
+    return tuple(values) if len(values) == 4 and values[2] > 0 and values[3] > 0 else None
+
+
+def do_analyze(library, sid):
+    try:
+        analyze.run(library, sid, report=lambda stage, value: say(stage=stage, value=round(value, 3)))
+        say(done=True)
+    except Exception as e:
+        library.update_session(sid, status="failed", error=str(e)[:300])
+        say(error=str(e)[:300])
+        return 1
+    return 0
+
+
+def do_export(library, cid):
+    from .media import probe
+    clip = library.clip(cid)
+    session = library.session(clip["session"])
+    try:
+        info = probe(session["source"])
+        path = render.export_clip(session["source"], clip, (info["width"], info["height"]), exports_dir(),
+                                  parse_facecam(session["facecam"]),
+                                  lambda v: say(stage="Exporting", value=round(v, 3)))
+        library.update_clip(cid, state="exported", exported=path)
+        say(done=True, path=path)
+    except Exception as e:
+        say(error=str(e)[:300])
+        return 1
+    return 0
+
+
+def attach_streams():
+    """A windowed .exe starts with no sys.stdout even when the app gave it a pipe, so reconnect to that pipe."""
+    if sys.stdout is None and sys.platform == "win32":
+        import ctypes
+        import msvcrt
+        ctypes.windll.kernel32.GetStdHandle.restype = ctypes.c_void_p
+        handle = ctypes.windll.kernel32.GetStdHandle(-11)
+        sys.stdout = os.fdopen(msvcrt.open_osfhandle(handle, os.O_WRONLY), "w", encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+def main(args):
+    lower_priority()
+    attach_streams()
+    library = Library(os.environ.get("CLIPSTUDIO_DB") or None)
+    job, target = args[0], int(args[1])
+    return do_analyze(library, target) if job == "analyze" else do_export(library, target)
