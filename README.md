@@ -71,7 +71,7 @@ The first analysis downloads the speech model, about 1.6 GB for the default size
 | `clipstudio/insights.py` | Virality score, title ideas and hashtags |
 | `clipstudio/account.py`, `plans.py` | Sign-in, Premium, and the free plan's caps |
 | `clipstudio/ui/premium.py`, `ui/recent.py` | Premium screens, recent-streams picker |
-| `server/` | Licence server (Cloudflare Worker): sign-in, Razorpay, Paddle, gift keys. See `server/README.md` |
+| (payments) | Sign-in, Premium and gift keys come from ZunimiLabs Pay, a separate project shared by every ZunimiLabs app |
 | `clipstudio/upscale.py` | Optional AI upscaling with Real-ESRGAN for low-quality streams |
 | `clipstudio/cleanup.py` | Removes the app's own leftovers at start and after each update |
 | `clipstudio/ui/fx.py` | Motion system, icons and custom controls |

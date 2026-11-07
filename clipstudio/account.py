@@ -1,4 +1,4 @@
-"""The signed-in account and its plan, from the Clip Studio licence server.
+"""The signed-in account and its plan, from ZunimiLabs Pay (pay.zunimilabs.online), the payment service all apps share.
 
 Sign-in opens Google in the browser and comes back to a one-time local port, like the OBS and YouTube apps do. The
 last answer from the server is kept, so Premium keeps working offline for a week.
@@ -18,7 +18,8 @@ import webbrowser
 
 from .version import VERSION
 
-API = os.environ.get("CLIPSTUDIO_API") or "https://clipstudio.zunimilabs.online"
+API = os.environ.get("ZUNIMILABS_PAY") or "https://pay.zunimilabs.online"
+PRODUCT = "clipstudio"
 GRACE = 7 * 86400          # Premium keeps working this long without reaching the server
 AGENT = "ClipStudio/" + VERSION
 SIGN_IN_WAIT = 300
@@ -70,6 +71,7 @@ class Account:
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
+        path += ("&" if "?" in path else "?") + "product=" + PRODUCT      # the shared service sells every app
         request = urllib.request.Request(API + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
