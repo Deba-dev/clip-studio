@@ -135,7 +135,7 @@ def test_captions_highlight_each_word_and_use_clip_time():
     assert len(lines) == 3
     assert lines[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.50")
     assert lines[-1].split(",")[2] == "0:00:01.75"
-    assert captions.HIGHLIGHT + "bhai" in lines[0]
+    assert captions.highlight("FFE100") + "bhai" in lines[0]
     assert "{bad}" not in text and "bad" in text
 
 

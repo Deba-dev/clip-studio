@@ -5,6 +5,7 @@ from PySide6.QtCore import QEasingCurve, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QBrush, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
+from .. import edit as clip_edit
 from . import theme as T
 from .fx import MOTION, alpha, draw_icon, draw_ring, font, glow, mix, panel, tween
 
@@ -223,7 +224,7 @@ class ClipCard(Card):
         p.drawRoundedRect(badge, 6, 6)
         p.setPen(T.TEXT)
         p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(c["rank"]))
-        length = "%ds" % (c["end"] - c["start"])
+        length = "%ds" % clip_edit.length(c)
         tw = p.fontMetrics().horizontalAdvance(length) + 12
         tag = QRectF(image.right() - tw - 5, image.bottom() - 24, tw, 19)
         p.setBrush(QColor(8, 5, 26, 215))
@@ -245,8 +246,23 @@ class ClipCard(Card):
         icon = {"kept": "check", "skipped": "x", "exported": "export"}.get(state)
         y = r.bottom() - 26
         tx = x
+        for tag in c.get("tags", [])[:2]:
+            name, tag_icon, color = T.TAGS.get(tag, T.TAGS["hype"])
+            p.setFont(font(10, QFont.Weight.DemiBold))
+            w = p.fontMetrics().horizontalAdvance(name) + 24
+            chip = QRectF(tx, y + 1, w, 19)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(alpha(color, 46))
+            p.drawRoundedRect(chip, 9, 9)
+            draw_icon(p, tag_icon, QRectF(tx + 5, y + 4, 13, 13), color, 2)
+            p.setPen(color)
+            p.drawText(chip.adjusted(20, 0, 0, 0), Qt.AlignmentFlag.AlignVCenter, name)
+            tx += w + 4
+        p.setFont(font(11))
+        if tx != x:
+            tx += 2
         if icon:
-            draw_icon(p, icon, QRectF(x, y + 3, 14, 14), accent, 2.2)
+            draw_icon(p, icon, QRectF(tx, y + 3, 14, 14), accent, 2.2)
             tx += 18
         p.setPen(T.TEXT if icon else T.MUTE)
         p.drawText(QRectF(tx, y, width, 20), Qt.AlignmentFlag.AlignVCenter, status)

@@ -15,6 +15,9 @@ GOOD = QColor("#34d399")
 WARN = QColor("#fbbf24")
 BAD = QColor("#f87171")
 CAPTION = QColor("#ffe100")
+TAGS = {"funny": ("Funny", "laugh", QColor("#fbbf24")), "kills": ("Kill", "target", QColor("#34d399")),
+        "deaths": ("Death", "skull", QColor("#f87171")), "hype": ("Hype", "bolt", QColor("#c084fc")),
+        "marked": ("Marked", "star", QColor("#ffe100"))}
 
 QSS = """
 * { font-family: "Segoe UI", "Nirmala UI", sans-serif; font-size: 13px; color: #f6f4ff; }
@@ -40,5 +43,11 @@ QScrollBar::sub-page:vertical { background: none; height: 0; }
 QMenu { background: #140d30; border: 1px solid #3a2a78; border-radius: 10px; padding: 6px; }
 QMenu::item { padding: 7px 22px; border-radius: 6px; }
 QMenu::item:selected { background: #7c3aed; }
+QSlider::groove:horizontal { height: 5px; border-radius: 2px; background: rgba(170,166,204,0.22); }
+QSlider::sub-page:horizontal { height: 5px; border-radius: 2px; background: #a855f7; }
+QSlider::handle:horizontal { background: #f6f4ff; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
+QSlider::handle:horizontal:hover { background: #ffe100; }
+QSplitter::handle { background: transparent; }
+QSplitter::handle:hover { background: rgba(168,85,247,0.45); border-radius: 2px; }
 QToolTip { background: #140d30; color: #f6f4ff; border: 1px solid #3a2a78; padding: 4px; }
 """

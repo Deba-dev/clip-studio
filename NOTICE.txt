@@ -9,5 +9,8 @@ Qt for Python / PySide6 (LGPL v3)
   Source: https://code.qt.io/cgit/pyside/pyside-setup.git
 
 faster-whisper and CTranslate2 (MIT), Whisper models (MIT)
+YAMNet sound classifier (Apache 2.0), Copyright The TensorFlow Authors. Downloaded on first use as an unmodified ONNX
+  conversion from https://huggingface.co/audiomagic/yamnet-onnx, with AudioSet labels (CC BY 4.0).
+ONNX Runtime (MIT)
 yt-dlp (Unlicense)
 pytchat (MIT), websockets (BSD), NumPy (BSD)

@@ -19,7 +19,6 @@ Style: Cap,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,10
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-HIGHLIGHT = "{\\c&H00E1FF&}"
 PLAIN = "{\\c&HFFFFFF&}"
 
 
@@ -66,7 +65,12 @@ def apply_text(words, text):
             for i, t in enumerate(tokens)]
 
 
-def build_ass(words, start, end, font="Nirmala UI", size=84, margin=560):
+def highlight(rgb):
+    """ASS colours are written blue, green, red."""
+    return "{\\c&H%s%s%s&}" % (rgb[4:6], rgb[2:4], rgb[0:2])
+
+
+def build_ass(words, start, end, font="Nirmala UI", size=84, margin=560, color="FFE100"):
     """words are in stream time; output times are relative to the clip start.
 
     Nirmala UI ships with Windows and covers both Latin and Devanagari.
@@ -81,6 +85,6 @@ def build_ass(words, start, end, font="Nirmala UI", size=84, margin=560):
             a = max(w["s"], start) - start
             nxt = line[i + 1]["s"] if i + 1 < len(line) else hold
             b = max(min(nxt, end) - start, a + 0.05)
-            text = " ".join((HIGHLIGHT + x["w"] + PLAIN) if j == i else x["w"] for j, x in enumerate(line))
+            text = " ".join((highlight(color) + x["w"] + PLAIN) if j == i else x["w"] for j, x in enumerate(line))
             events.append("Dialogue: 0,%s,%s,Cap,,0,0,0,,%s" % (stamp(a), stamp(b), text))
     return HEADER.format(font=font, size=size, margin=margin) + "\n".join(events) + "\n"

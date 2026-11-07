@@ -119,6 +119,27 @@ ICONS = {
     "down": "M12 4 L12 15 M7 10 L12 15 L17 10 M5 20 L19 20",
     "phone": "M7 3 L17 3 L17 21 L7 21 Z M11 18 L13 18",
     "alert": "M12 4 L21 20 L3 20 Z M12 10 L12 15 M12 17 L12 17.5",
+    "first": "M6 5 L6 19 M19 5 L9 12 L19 19 Z",
+    "last": "M18 5 L18 19 M5 5 L15 12 L5 19 Z",
+    "rewind": "M12 6 L4 12 L12 18 Z M21 6 L13 12 L21 18 Z",
+    "forward": "M12 6 L20 12 L12 18 Z M3 6 L11 12 L3 18 Z",
+    "stepback": "M16 6 L8 12 L16 18 M5 6 L5 18",
+    "stepnext": "M8 6 L16 12 L8 18 M19 6 L19 18",
+    "redo": "M16 7 L20 11 L16 15 M20 11 L9 11 C5 11 4 14 4 15.5 C4 18 6 19 9 19 L14 19",
+    "cut": "O 6 6 2.6 O 6 18 2.6 M8 8 L20 19 M8 16 L20 5",
+    "split": "M12 3 L12 21 M4 8 L9 12 L4 16 M20 8 L15 12 L20 16",
+    "markin": "M9 4 L5 4 L5 20 L9 20 M12 12 L20 12 M16 8 L20 12 L16 16",
+    "markout": "M15 4 L19 4 L19 20 L15 20 M12 12 L4 12 M8 8 L4 12 L8 16",
+    "setstart": "M7 4 L7 20 M11 12 L20 12 M11 12 L15 8 M11 12 L15 16",
+    "setend": "M17 4 L17 20 M13 12 L4 12 M13 12 L9 8 M13 12 L9 16",
+    "loop": "M17 3 L21 7 L17 11 M21 7 L7 7 C5 7 3 9 3 11 M7 21 L3 17 L7 13 M3 17 L17 17 C19 17 21 15 21 13",
+    "sound": "M4 9 L8 9 L13 5 L13 19 L8 15 L4 15 Z M16.5 9 C18 10.5 18 13.5 16.5 15 M19 6.5 C22 9.5 22 14.5 19 17.5",
+    "mute": "M4 9 L8 9 L13 5 L13 19 L8 15 L4 15 Z M16 9.5 L21 14.5 M21 9.5 L16 14.5",
+    "skull": "M12 3 C7 3 4 6.5 4 11 C4 14 5.5 15.5 7 16.5 L7 20 L17 20 L17 16.5 C18.5 15.5 20 14 20 11 C20 6.5 17 3 12 3 Z "
+             "O 9 11 1.6 O 15 11 1.6 M10.5 20 L10.5 17.5 M13.5 20 L13.5 17.5",
+    "laugh": "O 12 12 9 M7.5 13 C8.5 18 15.5 18 16.5 13 Z M8 9 L10 10 L8 11 M16 9 L14 10 L16 11",
+    "target": "O 12 12 8 O 12 12 3 M12 2 L12 6 M12 18 L12 22 M2 12 L6 12 M18 12 L22 12",
+    "bolt": "M13 3 L5 14 L11 14 L10 21 L19 10 L13 10 Z",
 }
 _cache = {}
 
@@ -333,6 +354,28 @@ class Button(QPushButton):
         p.setPen(color)
         p.setFont(self.font())
         p.drawText(QRectF(x, r.y(), width + 2, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
+
+
+class IconButton(Button):
+    """A square tool button. It can stay lit, for switches like loop."""
+
+    def __init__(self, icon, tip, checkable=False):
+        super().__init__("", icon, flat=False)
+        self.setToolTip(tip)
+        self.setCheckable(checkable)
+        self.setFixedSize(40, 40)
+
+    def sizeHint(self):
+        return QSize(40, 40)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.isChecked():
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(T.CAPTION)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(QRectF(12, 32, 16, 2.5), 1.2, 1.2)
 
 
 class Toggle(QCheckBox):

@@ -8,10 +8,27 @@ The market research behind these decisions is in [reports/Stream clipping tools 
 
 1. **During the stream:** only light logging runs. The app records chat and your moment markers (F9, or saving an OBS replay). Nothing touches the GPU.
 2. **After the stream:** analysis waits until the stream has ended, then runs in a low-priority background process.
-   - Pass 1 ranks the whole stream from audio, chat and markers.
-   - Pass 2 runs speech recognition only on the shortlisted windows, which keeps it fast without a GPU.
-3. **Review desk:** each clip says why it was picked. A live phone preview shows the real layout and captions. Drag handles that snap to words, edit captions and undo anything.
-4. **Export:** clips render at 1080x1920 with a hardware encoder when one works.
+   - Pass 1 reads the audio once for loudness and for sounds: laughter, gunfire and shouting.
+   - Pass 2 reads the keyframes for the game's own HUD. In Valorant that gives kills, your deaths, clutches and which parts are menus. Other games use sound, speech and chat.
+   - Pass 3 runs speech recognition only on the shortlisted clips, which keeps it fast without a GPU.
+3. **Review desk:** each clip says why it was picked and carries a tag: Funny, Kill, Death or Hype. A live phone preview shows the real layout, captions and loudness. Cut, split, trim, mute, fade and change caption style, with undo and redo on all of it.
+4. **Export:** clips render at 1080x1920 at -14 LUFS, the level phones play at, with a hardware encoder when one works.
+
+## Editing keys
+
+| Key | Does |
+|---|---|
+| Space | Play or pause |
+| Left, Right | Back or forward 1 second |
+| J, L | Back or forward 5 seconds |
+| `,` `.` | One frame back or forward |
+| Home, End | Clip start or end |
+| `[` `]` | Start or end the clip here |
+| I, O, Delete | Mark a part, then cut it out |
+| S | Split into two clips |
+| M | Mute the preview |
+| Ctrl+Z, Ctrl+Y | Undo, redo |
+| K, X | Keep, skip |
 
 ## Run it
 
@@ -25,7 +42,7 @@ py -3.12 -m venv .venv
 
 In OBS, turn on Tools > WebSocket Server Settings and put the password in Clip Studio's Settings. You can also press **Add a recording** to try it on any existing video.
 
-The first analysis downloads the speech model, about 480 MB for the default size.
+The first analysis downloads the speech model, about 1.6 GB for the default size, a 145 MB model that identifies the language, and a 16 MB sound model.
 
 ## Tests
 
@@ -39,7 +56,10 @@ The first analysis downloads the speech model, about 480 MB for the default size
 | File | Job |
 |---|---|
 | `clipstudio/detect.py` | Scores moments, learns chat delay, sets clip edges |
-| `clipstudio/analyze.py` | The two-pass post-stream pipeline |
+| `clipstudio/sound.py` | Laughter, gunfire and shouting from the audio |
+| `clipstudio/hud.py` | Reads kills and deaths from Valorant's HUD |
+| `clipstudio/edit.py` | Cuts, mutes and loudness targets, shared by preview and export |
+| `clipstudio/analyze.py` | The post-stream pipeline |
 | `clipstudio/transcribe.py` | faster-whisper with word timings |
 | `clipstudio/roman.py` | Devanagari to Roman captions |
 | `clipstudio/captions.py` | Burned-in ASS captions |

@@ -9,6 +9,7 @@ from .paths import tool
 
 HIDE = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 RATE = 16000
+VOICE = "highpass=f=100,lowpass=f=7500,dynaudnorm=f=200:g=11:m=12"     # lifts quiet speech for recognition only
 
 
 def input_args(source):
@@ -39,8 +40,11 @@ def probe(source):
             "width": int(video["width"]), "height": int(video["height"]), "audio_tracks": len(audio)}
 
 
-def loudness_per_second(source, track=0, on_progress=None, total=0.0):
-    """Mean level in dB for every second. Streams through a pipe, so a 4-hour file needs no temp space."""
+def loudness_per_second(source, track=0, on_progress=None, total=0.0, tap=None):
+    """Mean level in dB for every second. Streams through a pipe, so a 4-hour file needs no temp space.
+
+    tap, when given, sees every second of audio too, so sound tagging costs no second read of the file.
+    """
     cmd = [tool("ffmpeg"), "-v", "error", *input_args(source), "-map", "0:a:%d" % track,
            "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=HIDE)
@@ -52,6 +56,8 @@ def loudness_per_second(source, track=0, on_progress=None, total=0.0):
             if len(raw) < 2:
                 break
             samples = np.frombuffer(raw[:len(raw) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+            if tap:
+                tap(samples)
             rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
             levels.append(20 * np.log10(max(rms, 1e-5)))
             if on_progress and total and len(levels) % 60 == 0:
@@ -64,10 +70,11 @@ def loudness_per_second(source, track=0, on_progress=None, total=0.0):
     return np.array(levels, dtype=np.float32)
 
 
-def audio_window(source, start, length, track=0):
+def audio_window(source, start, length, track=0, voice=False):
     """A float32 16 kHz mono slice, ready for speech recognition."""
     cmd = [tool("ffmpeg"), "-v", "error", "-ss", "%.3f" % max(start, 0), "-t", "%.3f" % length,
-           *input_args(source), "-map", "0:a:%d" % track, "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
+           *input_args(source), "-map", "0:a:%d" % track, "-ac", "1", "-ar", str(RATE),
+           *(["-af", VOICE] if voice else []), "-f", "s16le", "-"]
     out = subprocess.run(cmd, capture_output=True, creationflags=HIDE)
     if out.returncode:
         raise RuntimeError(out.stderr.decode("utf-8", "replace").strip()[-200:])

@@ -10,7 +10,9 @@ from .paths import data_dir
 DEFAULTS = {
     "obs_host": "127.0.0.1", "obs_port": 4455, "obs_password": "",
     "twitch_channel": "", "kick_channel": "", "youtube_video": "",
-    "model": "small", "language": "", "roman_script": True,
+    "model": "large-v3-turbo", "language": "", "roman_script": True, "caption_mode": "spoken",
+    "want_funny": 100, "want_kills": 100, "want_deaths": 100, "want_hype": 100,
+    "review_split": [],
     "max_clips": 12, "clip_length": 45, "reduce_motion": False,
     "downloads_folder": "", "exports_folder": "", "update_pending": "",
 }

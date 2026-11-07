@@ -93,7 +93,7 @@ def do_export(library, cid):
         os.makedirs(folder, exist_ok=True)
         path = render.export_clip(session["source"], clip, (info["width"], info["height"]), folder,
                                   parse_facecam(session["facecam"]),
-                                  lambda v: say(stage="Exporting", value=round(v, 3)))
+                                  lambda v: say(stage="Exporting", value=round(v, 3)), info["audio_tracks"] > 0)
         library.update_clip(cid, state="exported", exported=path)
         say(done=True, path=path)
     except Exception as e:

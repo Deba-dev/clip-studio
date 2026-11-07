@@ -36,9 +36,13 @@ class Library:
         self.con.execute("PRAGMA foreign_keys=ON")
         self.con.executescript(SCHEMA)
         columns = [r["name"] for r in self.con.execute("PRAGMA table_info(sessions)")]
-        for column in ("url", "folder"):        # libraries made by older versions
+        for column in ("url", "folder", "game"):    # libraries made by older versions
             if column not in columns:
                 self.con.execute("ALTER TABLE sessions ADD COLUMN %s TEXT DEFAULT ''" % column)
+        columns = [r["name"] for r in self.con.execute("PRAGMA table_info(clips)")]
+        for column, empty in (("tags", "[]"), ("events", "[]"), ("edit", "{}")):
+            if column not in columns:
+                self.con.execute("ALTER TABLE clips ADD COLUMN %s TEXT DEFAULT '%s'" % (column, empty))
 
     def close(self):
         self.con.close()
@@ -103,10 +107,11 @@ class Library:
                     continue
                 rank += 1
                 self.con.execute(
-                    "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (sid, rank, c["start"], c["end"], c["peak"], c["score"], json.dumps(c["reasons"]),
-                     c.get("title", ""), json.dumps(c.get("words", []))))
+                     c.get("title", ""), json.dumps(c.get("words", [])), json.dumps(c.get("tags", [])),
+                     json.dumps(c.get("events", []))))
 
     def clips(self, sid):
         return [self._clip(r) for r in
@@ -121,11 +126,37 @@ class Library:
         c = dict(row)
         c["reasons"] = json.loads(c["reasons"])
         c["words"] = json.loads(c["words"] or "[]")
+        c["tags"] = json.loads(c.get("tags") or "[]")
+        c["events"] = json.loads(c.get("events") or "[]")
+        c["edit"] = json.loads(c.get("edit") or "{}")
         return c
 
+    def split_clip(self, cid, t):
+        """Makes two clips from one at time t. Returns the new clip's id. The second half sits right after the first."""
+        c = self.clip(cid)
+        with self.con:
+            self.con.execute("UPDATE clips SET rank=rank+1 WHERE session=? AND rank>?", (c["session"], c["rank"]))
+            self.con.execute("UPDATE clips SET end=? WHERE id=?", (t, cid))
+            cur = self.con.execute(
+                "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events, layout, edit) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (c["session"], c["rank"] + 1, t, c["end"], (t + c["end"]) / 2, c["score"], json.dumps(c["reasons"]),
+                 (c["title"] + " (part 2)") if c["title"] else "", json.dumps(c["words"]), json.dumps(c["tags"]),
+                 json.dumps(c["events"]), c["layout"], json.dumps(c["edit"])))
+        return cur.lastrowid
+
+    def join_clips(self, cid, other):
+        """Undoes a split."""
+        first, second = self.clip(cid), self.clip(other)
+        with self.con:
+            self.con.execute("UPDATE clips SET end=? WHERE id=?", (second["end"], cid))
+            self.con.execute("DELETE FROM clips WHERE id=?", (other,))
+            self.con.execute("UPDATE clips SET rank=rank-1 WHERE session=? AND rank>?", (first["session"], second["rank"]))
+
     def update_clip(self, cid, **fields):
-        if "words" in fields:
-            fields["words"] = json.dumps(fields["words"])
+        for key in ("words", "edit"):
+            if key in fields:
+                fields[key] = json.dumps(fields[key])
         names = ", ".join(k + "=?" for k in fields)
         with self.con:
             self.con.execute("UPDATE clips SET %s WHERE id=?" % names, (*fields.values(), cid))

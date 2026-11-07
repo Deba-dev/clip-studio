@@ -16,6 +16,13 @@ HYPE = re.compile(r"\b(lol+|lmao+|kek\w*|omega\w*|pog\w*|clip\s*(it|that)?|w+|l+
                   r"bhai+|arre+|kya\s*baat|op+|mast|gajab)\b|[😂🤣💀🔥😱]", re.I)
 VOICE = re.compile(r"\b(no+\s*way|oh\s*my\s*god|what+|let'?s\s*go+|holy|bro+|are\s*you\s*kidding|wow+|"
                    r"bhai+|arre+|kya|chal+|maar|gaya|gayi|nahi+|oh\s*no+)\b|भाई|अरे|क्या|नहीं|गया", re.I)
+BURST = 14              # kills this close together are one moment
+KILL_SCORE = {0: 1.5, 1: 3.5, 2: 6.0, 3: 8.0, 4: 9.5, 5: 11.0}
+KILL_NAME = {1: "Kill", 2: "Double kill", 3: "Triple kill", 4: "Quadra kill", 5: "Ace"}
+LAUGH_MIN = 0.15        # YAMNet laughter score. 99.9% of a real stream sat under 0.26, so this is already rare
+WEIGHTS = {"funny": 1.0, "kills": 1.0, "deaths": 1.0, "hype": 1.0}
+SHARE = 4               # each wanted kind keeps at least 1/SHARE of the shortlist, when that many exist
+SHORTEST, LONGEST = 12, 59
 
 
 def robust_z(series, window=BASELINE):
@@ -135,7 +142,175 @@ def pick_moments(parts, duration, limit=12, length=45):
     for p in picks:
         p["start"] = max(p["peak"] - length * LEAD_SHARE, 0.0)
         p["end"] = min(p["start"] + length, duration)
+        p["tags"] = ["marked"] if p["score"] >= 100 else ["hype"]
     return picks
+
+
+def frame(first, last, lead, tail, duration):
+    """Clip edges around a span of action, with the setup before it and the reaction after it."""
+    start = max(first - lead, 0.0)
+    end = min(last + tail, duration)
+    if end - start < SHORTEST:
+        start = max(end - SHORTEST, 0.0)
+    if end - start > LONGEST:
+        start = end - LONGEST
+    return start, end
+
+
+def locate(event, gun):
+    """Keyframes only say a kill happened in the last few seconds. The gunshot in that gap says exactly when."""
+    lo, hi = int(event["from"]), int(event["t"]) + 1
+    part = gun[lo:hi] if gun is not None else np.zeros(0)
+    return float(lo + int(np.argmax(part))) if part.size and part.max() > .2 else event["t"] - 2.0
+
+
+def reaction(lanes, t):
+    """How hard the room reacted in the seconds after t. Returns (score, laughed, shouted)."""
+    if not lanes:
+        return 0.0, False, False
+    lo, hi = int(t), int(t) + 9
+    laugh = float(lanes["laugh"][lo:hi].max(initial=0))
+    shout = float(lanes["shout"][lo:hi].max(initial=0))
+    return min(laugh / .25, 1) * 3 + min(shout / .08, 1) * 1.5, laugh >= LAUGH_MIN, shout >= .05
+
+
+def moment(first, last, peak, score, lead, tail, duration, tags, reasons, title, events):
+    start, end = frame(first, last, lead, tail, duration)
+    return {"peak": float(peak), "score": float(score), "start": start, "end": end, "first": float(first),
+            "last": float(last), "tags": tags, "reasons": reasons, "title": title, "events": events}
+
+
+def kill_moment(kills, lanes, duration):
+    first, last = kills[0]["at"], kills[-1]["at"]
+    bonus, laughed, _ = reaction(lanes, last)
+    n = min(len(kills), 5)
+    reasons = ["%d enemies went down in %ds" % (n, last - first + 1) if n > 1 else "An enemy went down"]
+    if laughed:
+        reasons.append("You laughed right after")
+    m = moment(first, last, last, KILL_SCORE[n] + bonus, 12, 5, duration, ["kills"] + (["funny"] if laughed else []),
+               reasons, KILL_NAME[n], [{"t": k["at"], "kind": "kill"} for k in kills])
+    m["round"] = kills[0]["round"]
+    return m
+
+
+def game_moments(game, lanes, duration):
+    """Turns the HUD's events into moments: kill bursts, reacted-to deaths and clutches."""
+    gun = lanes["gun"] if lanes else None
+    events = [dict(e, at=locate(e, gun)) for e in game["events"]]
+    out = []
+    burst = []
+    for e in sorted((e for e in events if e["kind"] == "enemy_down"), key=lambda e: e["at"]):
+        if burst and (e["at"] - burst[-1]["at"] > BURST or e["round"] != burst[-1]["round"]):
+            out.append(kill_moment(burst, lanes, duration))
+            burst = []
+        burst.append(e)
+    if burst:
+        out.append(kill_moment(burst, lanes, duration))
+    for e in events:
+        if e["kind"] == "you_down":
+            bonus, laughed, shouted = reaction(lanes, e["at"])
+            if bonus < .5:
+                continue        # dying is routine. Dying and reacting to it is the clip
+            reasons = ["You died"] + (["You laughed about it"] if laughed else []) + (["You yelled"] if shouted else [])
+            out.append(moment(e["at"], e["at"], e["at"], 2.5 + bonus * 1.4, 12, 8, duration,
+                              ["deaths"] + (["funny"] if laughed else []), reasons, "Death reaction",
+                              [{"t": e["at"], "kind": "death"}]))
+        elif e["kind"] == "clutch":
+            n = e["against"]
+            out.append(moment(e["t"] - 22, e["t"], e["t"], 9.0 + n, 6, 5, duration, ["kills"],
+                              ["You won the round alone against %d" % n], "1v%d clutch" % n,
+                              [{"t": e["t"], "kind": "clutch"}]))
+    return out
+
+
+def apply_own_kills(m, own, dead=None):
+    """Credits a kill moment. The skull banner also shows while spectating, so anything after the streamer's death
+    in that round belongs to a teammate. dead is the last moment the streamer was surely alive."""
+    mine = [t for t in own if dead is None or t < dead]
+    n = min(len(mine), 5)
+    if n:
+        m["score"] = KILL_SCORE[n] + 2.0 + (m["score"] - KILL_SCORE[min(len(m["events"]), 5)])
+        m["title"] = KILL_NAME[n]
+        m["reasons"] = ["You got %d kills" % n if n > 1 else "You got the kill"] + m["reasons"][1:]
+        m["events"] = [{"t": t, "kind": "kill"} for t in mine]
+        m["first"], m["last"], m["peak"] = mine[0], mine[-1], mine[-1]
+    else:
+        m["score"] *= .4
+        m["title"] = "Team fight"
+        m["tags"] = ["hype"] + [t for t in m["tags"] if t not in ("kills", "hype")]
+        m["reasons"] = ["Your team got the kill"] + m["reasons"][1:]
+    return m
+
+
+def laugh_moments(lanes, duration):
+    """Laughter is the best funny-moment detector there is. Most of the clip sits before it: that is the joke."""
+    lane = np.array(lanes["laugh"], dtype=np.float64)
+    out = []
+    while lane.size:
+        i = int(np.argmax(lane))
+        peak = float(lane[i])
+        if peak < LAUGH_MIN:
+            break
+        lasting = int((lanes["laugh"][max(i - 6, 0):i + 7] >= .08).sum())
+        out.append(moment(i, i, i, 4.0 + peak * 7 + min(lasting, 6) * .5, 20, 6, duration, ["funny"],
+                          ["You laughed" if lasting < 4 else "A long laugh"], "Funny moment",
+                          [{"t": float(i), "kind": "laugh"}]))
+        lane[max(i - MIN_GAP, 0):i + MIN_GAP] = 0
+    return out
+
+
+def overlaps(a, b):
+    return a["start"] < b["end"] and b["start"] < a["end"]
+
+
+def absorb(keep, other):
+    """Two signals on the same moment make it better, and it stays one clip."""
+    keep["score"] += other["score"] * .35
+    keep["tags"] = keep["tags"] + [t for t in other["tags"] if t not in keep["tags"]]
+    keep["reasons"] = keep["reasons"] + [r for r in other["reasons"] if r not in keep["reasons"]]
+    keep["events"] = keep.get("events", []) + other.get("events", [])
+    if "first" in other:
+        keep["first"] = min(keep.get("first", other["first"]), other["first"])
+        keep["last"] = max(keep.get("last", other["last"]), other["last"])
+        keep["start"] = min(keep["start"], other["start"])
+        keep["end"] = max(keep["end"], other["end"])
+        if keep["end"] - keep["start"] > LONGEST:
+            keep["start"] = keep["end"] - LONGEST
+
+
+def select(moments, limit, weights=None):
+    """The shortlist: the user's priorities, no duplicates, and never twelve clips of the same kind."""
+    weights = {**WEIGHTS, **(weights or {})}
+    ranked = []
+    for m in moments:
+        if m["score"] >= 100:
+            ranked.append(m)
+            continue
+        weight = max((weights.get(t, 1.0) for t in m["tags"]), default=1.0)
+        if weight > 0:
+            ranked.append(dict(m, score=m["score"] * weight))
+    ranked.sort(key=lambda m: m["score"], reverse=True)
+    taken = []
+    for m in ranked:
+        twin = next((k for k in taken if overlaps(k, m)), None)
+        if twin:
+            absorb(twin, m)
+        else:
+            taken.append(dict(m))
+    taken.sort(key=lambda m: m["score"], reverse=True)
+    chosen, spare = taken[:limit], taken[limit:]
+    floor = max(limit // SHARE, 1)
+    for tag in ("kills", "deaths", "funny"):
+        if weights.get(tag, 1.0) <= 0:
+            continue
+        for extra in [m for m in spare if tag in m["tags"]][:max(floor - sum(tag in m["tags"] for m in chosen), 0)]:
+            counts = {t: sum(t in m["tags"] for m in chosen) for t in ("funny", "kills", "deaths")}
+            loser = next((m for m in reversed(chosen) if m["score"] < 100 and
+                          all(counts[t] > floor for t in m["tags"] if t in counts)), None)
+            if loser:
+                chosen[chosen.index(loser)] = extra
+    chosen.sort(key=lambda m: m["score"], reverse=True)
+    return chosen
 
 
 def refine_with_words(pick, words, max_length=59):
@@ -162,6 +337,11 @@ def refine_with_words(pick, words, max_length=59):
     end = max(min(end, pick["end"] + 8), peak + 2)
     if end - start > max_length:
         start = end - max_length
+    if "first" in pick:         # the transcript may move the edges, but never so far that the action is lost
+        start = min(start, pick["first"] - 3)
+        end = max(end, pick["last"] + 2)
+        if end - start > max_length:
+            start = end - max_length
     pick = dict(pick, start=max(start, 0.0), end=end)
     voice = sum(1 for w in words if pick["start"] <= w["s"] <= pick["end"] and VOICE.search(w["w"]))
     if voice >= 2:

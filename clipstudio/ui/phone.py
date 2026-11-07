@@ -10,7 +10,6 @@ from .cards import cover, rounded
 from .fx import alpha, draw_icon, font, glow, tween
 
 CAM_SHARE = 680 / 1920
-CAPTION_Y = 1360 / 1920     # matches the bottom margin of the exported captions
 
 
 class Phone(QWidget):
@@ -29,6 +28,10 @@ class Phone(QWidget):
         self.paused = True
         self.pause_mark = 1.0
         self.note = ""
+        self.pan = 0.0
+        self.caption_size = 84
+        self.caption_y = 560
+        self.caption_color = T.CAPTION
         self.setMinimumSize(200, 340)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -47,6 +50,12 @@ class Phone(QWidget):
         self.lines = group_words(words)
         self.layout_name = layout
         self.facecam = facecam
+        self.update()
+
+    def set_style(self, pan, size, y, color):
+        """Everything the export will do to the picture, so the preview never lies."""
+        self.pan, self.caption_size, self.caption_y = pan, size, y
+        self.caption_color = QColor("#" + color)
         self.update()
 
     def set_layout(self, layout):
@@ -116,7 +125,7 @@ class Phone(QWidget):
             self.fill(p, source, top)
             self.fill(p, image, bottom)
         elif layout == "crop":
-            self.fill(p, image, s)
+            self.fill(p, image, s, self.pan)
         else:
             tiny = image.scaled(48, 27, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.fill(p, tiny, s)
@@ -125,10 +134,10 @@ class Phone(QWidget):
             p.drawImage(QRectF(s.x(), s.center().y() - height / 2, s.width(), height), image)
 
     @staticmethod
-    def fill(p, image, rect):
+    def fill(p, image, rect, pan=0.0):
         scale = max(rect.width() / image.width(), rect.height() / image.height())
         w, h = rect.width() / scale, rect.height() / scale
-        p.drawImage(rect, image, QRectF((image.width() - w) / 2, (image.height() - h) / 2, w, h))
+        p.drawImage(rect, image, QRectF((image.width() - w) * (pan + 1) / 2, (image.height() - h) / 2, w, h))
 
     def scaled_cam(self):
         if not self.facecam or not self.source_size:
@@ -140,7 +149,7 @@ class Phone(QWidget):
         line = next((l for l in self.lines if l[0]["s"] <= self.time <= l[-1]["e"] + .35), None)
         if not line:
             return
-        size = s.width() * 84 / 1080
+        size = s.width() * self.caption_size / 1080
         f = font(int(size), QFont.Weight.Bold)
         f.setFamilies(["Nirmala UI", "Segoe UI"])
         p.setFont(f)
@@ -149,7 +158,7 @@ class Phone(QWidget):
         space = metrics.horizontalAdvance(" ")
         total = sum(metrics.horizontalAdvance(t) for t in texts) + space * (len(texts) - 1)
         x = s.center().x() - total / 2
-        y = s.y() + s.height() * CAPTION_Y
+        y = s.y() + s.height() * (1920 - self.caption_y) / 1920
         current = next((i for i in range(len(line) - 1, -1, -1) if line[i]["s"] <= self.time), 0)
         for i, text in enumerate(texts):
             path = QPainterPath()
@@ -159,6 +168,6 @@ class Phone(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPath(path)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(T.CAPTION if i == current else T.TEXT)
+            p.setBrush(self.caption_color if i == current else T.TEXT)
             p.drawPath(path)
             x += metrics.horizontalAdvance(text) + space

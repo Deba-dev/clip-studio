@@ -7,7 +7,7 @@ import sys
 from PySide6.QtCore import QAbstractNativeEventFilter, QEasingCurve, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QSlider,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
 from .. import chat, fetch
@@ -671,14 +671,29 @@ class SettingsPage(QWidget):
         self.kick = QLineEdit(s.get("kick_channel"), placeholderText="your channel name or chatroom ID")
         self.youtube = QLineEdit(s.get("youtube_video"), placeholderText="this stream's live link")
         self.model = QComboBox()
-        for label, value in (("Fast (small)", "small"), ("Balanced (medium)", "medium"),
-                             ("Best (large-v3-turbo, needs a good GPU)", "large-v3-turbo")):
+        for label, value in (("Best (1.6 GB download)", "large-v3-turbo"), ("Balanced (medium)", "medium"),
+                             ("Fast (small, weak on Hinglish)", "small")):
             self.model.addItem(label, value)
         self.model.setCurrentIndex(max(self.model.findData(s.get("model")), 0))
         self.language = QComboBox()
-        for label, value in (("Detect by itself", ""), ("Hindi / Hinglish", "hi"), ("English", "en")):
+        for label, value in (("Detect by itself", ""), ("Hindi / Hinglish", "hi"), ("English", "en"),
+                             ("Bengali", "bn"), ("Assamese", "as"), ("Tamil", "ta"), ("Telugu", "te"),
+                             ("Marathi", "mr")):
             self.language.addItem(label, value)
         self.language.setCurrentIndex(max(self.language.findData(s.get("language")), 0))
+        self.language.setToolTip("Mixed streams caption best when you pick the main language here")
+        self.caption_mode = QComboBox()
+        self.caption_mode.addItem("Same language as spoken", "spoken")
+        self.caption_mode.addItem("Translate to English", "english")
+        self.caption_mode.setCurrentIndex(max(self.caption_mode.findData(s.get("caption_mode")), 0))
+        self.caption_mode.setToolTip("Translation uses the medium speech model, a separate download")
+        self.wants = {}
+        for key in ("funny", "kills", "deaths", "hype"):
+            slider = QSlider(Qt.Orientation.Horizontal)
+            slider.setRange(0, 200)
+            slider.setSingleStep(25)
+            slider.setValue(int(s.get("want_" + key)))
+            self.wants[key] = slider
         self.roman = Toggle("Write Hindi captions in Roman letters (bhai, kya)", bool(s.get("roman_script")))
         self.clips = QSpinBox(minimum=1, maximum=40, value=int(s.get("max_clips")))
         self.length = QSpinBox(minimum=15, maximum=59, value=int(s.get("clip_length")), suffix=" s")
@@ -695,9 +710,15 @@ class SettingsPage(QWidget):
         clips = Section("Clips")
         clips.form.addRow("Caption quality", self.model)
         clips.form.addRow("Stream language", self.language)
+        clips.form.addRow("Captions", self.caption_mode)
         clips.form.addRow("", self.roman)
         clips.form.addRow("Clips per stream", self.clips)
         clips.form.addRow("Usual clip length", self.length)
+        want = Section("What to look for")
+        for key, label in (("funny", "Funny moments (laughter)"), ("kills", "Kills and clutches"),
+                           ("deaths", "Deaths you react to"), ("hype", "Loud or busy-chat moments")):
+            want.form.addRow(label, self.wants[key])
+        want.form.addRow("", QLabel("Left is never, the middle is normal, right is more. Used on the next analysis."))
         look = Section("Look and updates")
         look.form.addRow("", self.motion)
         self.check = Button("Check for updates", "down")
@@ -720,7 +741,8 @@ class SettingsPage(QWidget):
         grid.addWidget(live, 1, 0)
         grid.addWidget(clips, 0, 1)
         grid.addWidget(look, 1, 1)
-        grid.addWidget(folders, 2, 0, 1, 2)
+        grid.addWidget(want, 2, 0, 1, 2)
+        grid.addWidget(folders, 3, 0, 1, 2)
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 8, 0)
@@ -731,6 +753,7 @@ class SettingsPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidget(body)
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         page = QVBoxLayout(self)
         page.setContentsMargins(24, 20, 24, 14)
         page.addWidget(title)
@@ -746,7 +769,9 @@ class SettingsPage(QWidget):
                            ("kick_channel", self.kick.text().strip()), ("youtube_video", self.youtube.text().strip()),
                            ("model", self.model.currentData()), ("language", self.language.currentData()),
                            ("roman_script", self.roman.isChecked()), ("max_clips", self.clips.value()),
-                           ("clip_length", self.length.value()), ("reduce_motion", self.motion.isChecked())):
+                           ("clip_length", self.length.value()), ("reduce_motion", self.motion.isChecked()),
+                           ("caption_mode", self.caption_mode.currentData()),
+                           *(("want_" + k, v.value()) for k, v in self.wants.items())):
             self.w.settings.set(key, value)
         MOTION.set(reduced=self.motion.isChecked())
         self.w.connect_obs()
@@ -796,7 +821,7 @@ class MainWindow(QMainWindow):
         self.streams = StreamsPage(self)
         self.streams.pipeline.cancel.connect(self.cancel_job)
         self.streams.banner.update_now.connect(self.start_update)
-        self.review = ReviewPage(self.library)
+        self.review = ReviewPage(self.library, self.settings)
         self.review.back.connect(lambda: self.goto(0))
         self.review.export.connect(lambda cid: self.jobs.add("export", cid))
         self.review.say.connect(self.toast)
