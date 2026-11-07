@@ -19,6 +19,8 @@ VOTES = 6               # windows sampled to decide the stream's language
 # named the same real stream correctly in 10 of 11 windows, so a small model decides and the large one transcribes.
 LANGUAGE_MODEL = "base"
 LOW_CONFIDENCE = -1.2   # segments below this average log probability read as noise
+SILENT = 0.6            # Whisper's own no-speech rule: this likely to be silence...
+UNSURE = -1.0           # ...and this unsure of the words, together, means nobody was speaking
 REPEATING = 2.4         # compression ratio above this is the same words looping
 GAME_WORDS = {"Valorant": "Valorant, Jett, Reyna, Sage, Omen, Phoenix, Raze, Sova, Killjoy, Cypher, Viper, spike, "
                           "defuse, plant, clutch, ace, headshot, one tap, Vandal, Phantom, Operator, rotate, push"}
@@ -118,9 +120,32 @@ def readable(word, language):
 
 
 def trusted(segment):
-    if segment.no_speech_prob > 0.8 or HALLUCINATIONS.search(segment.text):
-        return False        # game noise makes Whisper invent words, so doubtful segments are dropped
+    """Game noise makes Whisper invent words, so doubtful segments are dropped.
+
+    Silence is judged the way Whisper itself does: a high no-speech score only counts with low confidence too. The
+    translating model gives real Hinglish speech no-speech scores of 0.7 to 0.85 (measured on a real stream), so a
+    no-speech score alone threw away good English captions.
+    """
+    if HALLUCINATIONS.search(segment.text):
+        return False
+    if segment.no_speech_prob > SILENT and segment.avg_logprob < UNSURE:
+        return False
     return segment.avg_logprob >= LOW_CONFIDENCE and segment.compression_ratio <= REPEATING
+
+
+def loose(text):
+    return re.sub(r"[^\w]+", " ", text.lower()).strip()
+
+
+def drop_loops(segments, keep=2):
+    """Whisper can get stuck saying one line over and over ("Go there." seven times in a row on a real stream).
+    A line may repeat once, as people do ("idhar hai, idhar hai"); more than that is a loop."""
+    out, run = [], 0
+    for segment in segments:
+        run = run + 1 if out and loose(segment.text) == loose(out[-1].text) else 1
+        if run <= keep:
+            out.append(segment)
+    return out
 
 
 def transcribe_window(model, source, start, length, language=None, roman=True, track=0, task="transcribe",
@@ -134,7 +159,7 @@ def transcribe_window(model, source, start, length, language=None, roman=True, t
                                       condition_on_previous_text=False, beam_size=5, hotwords=hotwords)
     spoken = info.language
     words = []
-    for segment in segments:
+    for segment in drop_loops(list(segments)):
         if not trusted(segment):
             continue
         for w in segment.words or []:

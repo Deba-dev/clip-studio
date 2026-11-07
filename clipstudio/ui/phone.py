@@ -4,7 +4,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPaint
 from PySide6.QtMultimedia import QVideoSink
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from ..captions import MAX_CHARS, group_words
+from ..captions import HOLD, font_for, group_words, shown, style_of
 from . import theme as T
 from .cards import cover, rounded
 from .fx import alpha, draw_icon, font, glow, tween
@@ -29,9 +29,8 @@ class Phone(QWidget):
         self.pause_mark = 1.0
         self.note = ""
         self.pan = 0.0
-        self.caption_size = 84
-        self.caption_y = 560
-        self.caption_color = T.CAPTION
+        self.style = style_of({})
+        self.words = []
         self.setMinimumSize(200, 340)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -47,15 +46,18 @@ class Phone(QWidget):
             self.update()
 
     def set_clip(self, words, layout, facecam):
-        self.lines = group_words(words)
+        self.words = words
+        self.lines = group_words(words, self.style["words"])
         self.layout_name = layout
         self.facecam = facecam
         self.update()
 
-    def set_style(self, pan, size, y, color):
+    def set_style(self, pan, style):
         """Everything the export will do to the picture, so the preview never lies."""
-        self.pan, self.caption_size, self.caption_y = pan, size, y
-        self.caption_color = QColor("#" + color)
+        self.pan = pan
+        if style["words"] != self.style["words"]:
+            self.lines = group_words(self.words, style["words"])
+        self.style = style
         self.update()
 
     def set_layout(self, layout):
@@ -146,28 +148,91 @@ class Phone(QWidget):
         return tuple(int(v * k) for v in self.facecam)
 
     def draw_caption(self, p, s):
-        line = next((l for l in self.lines if l[0]["s"] <= self.time <= l[-1]["e"] + .35), None)
+        """Draws the caption exactly as captions.build_ass styles it for the export."""
+        st = self.style
+        line = next((l for l in self.lines if l[0]["s"] <= self.time <= l[-1]["e"] + HOLD), None)
         if not line:
             return
-        size = s.width() * self.caption_size / 1080
-        f = font(int(size), QFont.Weight.Bold)
-        f.setFamilies(["Nirmala UI", "Segoe UI"])
-        p.setFont(f)
+        k = s.width() / 1080                    # export pixels to preview pixels
+        texts = [shown(w["w"], st) for w in line]
+        f = QFont()
+        f.setFamilies([font_for(" ".join(texts), st), "Nirmala UI", "Segoe UI"])
+        f.setPixelSize(max(int(st["size"] * k * 0.92), 6))
+        f.setBold(bool(st["bold"]))
+        f.setItalic(bool(st["italic"]))
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, st["spacing"] * k)
         metrics = QFontMetricsF(f)
-        texts = [w["w"] for w in line]
         space = metrics.horizontalAdvance(" ")
-        total = sum(metrics.horizontalAdvance(t) for t in texts) + space * (len(texts) - 1)
-        x = s.center().x() - total / 2
-        y = s.y() + s.height() * (1920 - self.caption_y) / 1920
+        widths = [metrics.horizontalAdvance(t) for t in texts]
+        total = sum(widths) + space * (len(texts) - 1)
+        base_y = s.y() + s.height() * (1920 - st["y"]) / 1920 - metrics.descent()
         current = next((i for i in range(len(line) - 1, -1, -1) if line[i]["s"] <= self.time), 0)
+        since_line = self.time - line[0]["s"]
+        since_word = self.time - line[current]["s"]
+
+        p.save()
+        cx, cy = s.center().x(), base_y - metrics.ascent() / 2
+        p.translate(cx, cy)
+        p.rotate(-st["tilt"])                   # ASS turns counter-clockwise for positive angles
+        scale, opacity, lift = 1.0, 1.0, 0.0
+        if st["animation"] == "bounce":
+            scale = 0.7 + 0.38 * min(since_line / .11, 1) if since_line < .11 else                 1.08 - 0.08 * min((since_line - .11) / .08, 1)
+        elif st["animation"] == "fade" or (st["animation"] == "slide" and since_line < .16):
+            opacity = min(since_line / (0.14 if st["animation"] == "fade" else 0.1), 1)
+            lift = 0 if st["animation"] == "fade" else 26 * k * (1 - min(since_line / .16, 1))
+        p.scale(scale, scale)
+        p.translate(-cx, -cy + lift)
+        p.setOpacity(opacity)
+
+        x0 = cx - total / 2
+        if st["box"]:
+            pad = 14 * k
+            box = QRectF(x0 - pad, base_y - metrics.ascent() - pad, total + 2 * pad, metrics.height() + 2 * pad)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(alpha(QColor("#" + st["box_color"]), int(255 * st["box_opacity"] / 100)))
+            p.drawRect(box)
+        x = x0
         for i, text in enumerate(texts):
             path = QPainterPath()
-            path.addText(x, y, f, text)
-            p.setPen(QPen(QColor(0, 0, 0), max(size * .16, 1.5), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                          Qt.PenJoinStyle.RoundJoin))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPath(path)
+            path.addText(0, 0, f, text)
+            grow = 1.0
+            if i == current and st["animation"] == "pop":
+                grow = 1 + .24 * min(since_word / .07, 1) if since_word < .07 else 1.24 - .12 * min((since_word - .07) / .08, 1)
+            p.save()
+            p.translate(x + widths[i] / 2, base_y - metrics.ascent() / 3)
+            p.scale(grow, grow)
+            p.translate(-widths[i] / 2, metrics.ascent() / 3)
+            spoken = i == current and st["highlight_mode"] in ("color", "box")
+            if st["shadow"] and not st["box"]:
+                p.save()
+                p.translate(st["shadow"] * k, st["shadow"] * k)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(alpha(QColor("#" + st["shadow_color"]), 160))
+                p.drawPath(path)
+                p.restore()
+            ring = st["outline_width"] if not st["box"] else 0
+            ring_color = QColor("#" + st["outline"])
+            if spoken and st["highlight_mode"] == "box":
+                ring, ring_color = max(st["outline_width"], 6) + 10, QColor("#" + st["highlight"])
+            if ring:
+                p.setPen(QPen(ring_color, max(ring * 2 * k, 1.0), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                              Qt.PenJoinStyle.RoundJoin))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawPath(path)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(self.caption_color if i == current else T.TEXT)
+            fill = QColor("#" + (st["highlight"] if spoken and st["highlight_mode"] == "color" else st["text"]))
+            p.setBrush(fill)
             p.drawPath(path)
-            x += metrics.horizontalAdvance(text) + space
+            if st["highlight_mode"] == "fill":      # karaoke: the colour sweeps across each word as it is said
+                w = line[i]
+                end = line[i + 1]["s"] if i + 1 < len(line) else line[-1]["e"]
+                done = 1.0 if self.time >= end else max(0.0, (self.time - w["s"]) / max(end - w["s"], .01))
+                if done > 0:
+                    p.save()
+                    p.setClipRect(QRectF(-4, -metrics.ascent() - 4, widths[i] * done + 4, metrics.height() + 8))
+                    p.setBrush(QColor("#" + st["highlight"]))
+                    p.drawPath(path)
+                    p.restore()
+            p.restore()
+            x += widths[i] + space
+        p.restore()

@@ -40,7 +40,8 @@ class Library:
             if column not in columns:
                 self.con.execute("ALTER TABLE sessions ADD COLUMN %s TEXT DEFAULT ''" % column)
         columns = [r["name"] for r in self.con.execute("PRAGMA table_info(clips)")]
-        for column, empty in (("tags", "[]"), ("events", "[]"), ("edit", "{}")):
+        # captioned: "1" once speech recognition has run on the clip. Clips made by older versions were all captioned.
+        for column, empty in (("tags", "[]"), ("events", "[]"), ("edit", "{}"), ("captioned", "1")):
             if column not in columns:
                 self.con.execute("ALTER TABLE clips ADD COLUMN %s TEXT DEFAULT '%s'" % (column, empty))
 
@@ -107,15 +108,20 @@ class Library:
                     continue
                 rank += 1
                 self.con.execute(
-                    "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events, "
+                    "captioned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (sid, rank, c["start"], c["end"], c["peak"], c["score"], json.dumps(c["reasons"]),
                      c.get("title", ""), json.dumps(c.get("words", [])), json.dumps(c.get("tags", [])),
-                     json.dumps(c.get("events", []))))
+                     json.dumps(c.get("events", [])), "1" if c.get("captioned", True) else "0"))
 
     def clips(self, sid):
         return [self._clip(r) for r in
                 self.con.execute("SELECT * FROM clips WHERE session=? ORDER BY rank", (sid,))]
+
+    def uncaptioned(self, sid):
+        """Clips still waiting for speech recognition, best first."""
+        return [self._clip(r) for r in self.con.execute(
+            "SELECT * FROM clips WHERE session=? AND captioned='0' ORDER BY rank", (sid,))]
 
     def clip(self, cid):
         row = self.con.execute("SELECT * FROM clips WHERE id=?", (cid,)).fetchone()
@@ -138,11 +144,11 @@ class Library:
             self.con.execute("UPDATE clips SET rank=rank+1 WHERE session=? AND rank>?", (c["session"], c["rank"]))
             self.con.execute("UPDATE clips SET end=? WHERE id=?", (t, cid))
             cur = self.con.execute(
-                "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events, layout, edit) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events, layout, edit, "
+                "captioned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (c["session"], c["rank"] + 1, t, c["end"], (t + c["end"]) / 2, c["score"], json.dumps(c["reasons"]),
                  (c["title"] + " (part 2)") if c["title"] else "", json.dumps(c["words"]), json.dumps(c["tags"]),
-                 json.dumps(c["events"]), c["layout"], json.dumps(c["edit"])))
+                 json.dumps(c["events"]), c["layout"], json.dumps(c["edit"]), c["captioned"]))
         return cur.lastrowid
 
     def join_clips(self, cid, other):

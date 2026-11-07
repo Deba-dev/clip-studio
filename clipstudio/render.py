@@ -7,7 +7,7 @@ import tempfile
 
 from . import edit as clip_edit
 from . import upscale
-from .captions import build_ass
+from .captions import build_ass, style_of
 from .media import HIDE, input_args
 from .paths import tool
 
@@ -208,7 +208,7 @@ def build_command(source, clip, size, out_path, ass_path=None, facecam=None, enc
 
 
 def export_clip(source, clip, size, folder, facecam=None, on_progress=None, audio=True, out=(1080, 1920), fps=30,
-                enhance="off"):
+                enhance="off", caption_default=None):
     """Writes to a temporary name first, so a crash can never leave a broken file that looks finished."""
     base = clean_name(clip.get("title") or "clip %d" % clip.get("rank", 1))
     final = os.path.join(folder, base + ".mp4")
@@ -238,8 +238,8 @@ def export_clip(source, clip, size, folder, facecam=None, on_progress=None, audi
         if clip.get("words"):
             ass = os.path.join(tmp, "captions.ass")
             with open(ass, "w", encoding="utf-8") as f:
-                f.write(build_ass(clip_edit.retime_words(clip), 0.0, length, size=int(e["caption_size"]),
-                                  margin=int(e["caption_y"]), color=e["caption_color"]))
+                f.write(build_ass(clip_edit.retime_words(clip), 0.0, length,
+                                  style_of(clip.get("edit"), caption_default)))
         cmd = build_command(source, clip, size, partial, ass, facecam, audio=audio, measured=measured, out=out,
                             fps=fps, enhance=enhance)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",

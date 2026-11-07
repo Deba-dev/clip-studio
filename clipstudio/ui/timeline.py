@@ -11,6 +11,7 @@ from .fx import alpha, draw_icon, font, panel
 
 BAR = 3
 GAP = 2
+PIN = 16            # clip pins above the activity map
 PINS = {"kill": ("target", T.TAGS["kills"][2]), "clutch": ("star", T.TAGS["kills"][2]),
         "death": ("skull", T.TAGS["deaths"][2]), "laugh": ("laugh", T.TAGS["funny"][2])}
 
@@ -21,12 +22,16 @@ def lane_bins(lane, count):
 
 
 class StreamMap(QWidget):
-    """One series, one hue: how much was happening across the stream, with each clip marked on top."""
+    """One series, one hue: how much was happening across the stream, with each clip marked on top.
+
+    Every clip has a pin in its tag's colour at its peak. Hover a pin to see what it is, click it to open the clip.
+    """
     picked = Signal(float)
+    chosen = Signal(int)            # a clip's id, from clicking its pin
 
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(80)
+        self.setFixedHeight(104)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.laugh = np.zeros(0)
@@ -37,6 +42,7 @@ class StreamMap(QWidget):
         self.active = None
         self.play = 0.0
         self.mouse = None
+        self.mouse_y = 0.0
 
     def load(self, curve, duration, clips, laugh=None, events=()):
         self.curve = curve if curve.size else np.zeros(1)
@@ -55,7 +61,12 @@ class StreamMap(QWidget):
         self.update()
 
     def area(self):
-        return QRectF(14, 22, self.width() - 28, self.height() - 42)
+        return QRectF(14, 46, self.width() - 28, self.height() - 66)
+
+    def pin_at(self, x):
+        """The clip whose pin is under x, preferring the stronger clip where pins overlap."""
+        near = [c for c in self.clips if abs(self.x_of(c["peak"]) - x) <= PIN / 2 + 1]
+        return max(near, key=lambda c: c["score"]) if near else None
 
     def x_of(self, t):
         a = self.area()
@@ -73,6 +84,7 @@ class StreamMap(QWidget):
 
     def mouseMoveEvent(self, event):
         self.mouse = event.position().x()
+        self.mouse_y = event.position().y()
         self.update()
 
     def leaveEvent(self, event):
@@ -80,7 +92,12 @@ class StreamMap(QWidget):
         self.update()
 
     def mousePressEvent(self, event):
-        self.picked.emit(self.time_at(event.position().x()))
+        pos = event.position()
+        pin = self.pin_at(pos.x()) if pos.y() < self.area().y() else None
+        if pin:
+            self.chosen.emit(pin["id"])
+        else:
+            self.picked.emit(self.time_at(pos.x()))
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -104,15 +121,21 @@ class StreamMap(QWidget):
             p.setBrush(alpha(T.A2, 95 + 160 * v))       # one hue: taller is also stronger
             p.drawRoundedRect(QRectF(a.x() + i * (BAR + GAP), a.bottom() - height, BAR, height), 1.5, 1.5)
         self.paint_pins(p, a)
+        self.paint_clip_pins(p, a)
         x = self.x_of(self.play)
         p.setPen(QPen(T.TEXT, 2))
         p.drawLine(QPointF(x, a.y() - 3), QPointF(x, a.bottom() + 2))
         if self.mouse is not None:
             t = self.time_at(self.mouse)
             mx = max(a.x(), min(self.mouse, a.right()))
+            pin = self.pin_at(self.mouse) if self.mouse_y < a.y() else None
             p.setPen(QPen(alpha(T.TEXT, 120), 1))
             p.drawLine(QPointF(mx, a.y()), QPointF(mx, a.bottom()))
             text = clock(t)
+            if pin:
+                name = T.TAGS.get((pin["tags"] or ["hype"])[0], T.TAGS["hype"])[0]
+                text = "%s  ·  %s  ·  %s" % (name, clock(pin["peak"]), pin["title"] or "Moment")
+                text = p.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, 360)
             width = p.fontMetrics().horizontalAdvance(text) + 14
             tip = QRectF(min(max(mx - width / 2, 2), self.width() - width - 2), 2, width, 18)
             p.setBrush(QColor(8, 5, 26, 235))
@@ -122,6 +145,23 @@ class StreamMap(QWidget):
             p.drawText(tip, Qt.AlignmentFlag.AlignCenter, text)
 
 
+    def paint_clip_pins(self, p, a):
+        """A row of pins above the activity: one per clip, coloured by what kind of moment it is."""
+        y = a.y() - PIN - 6
+        for c in sorted(self.clips, key=lambda c: (c["id"] == self.active, c["score"])):
+            name, icon, color = T.TAGS.get((c["tags"] or ["hype"])[0], T.TAGS["hype"])
+            x = self.x_of(c["peak"])
+            active = c["id"] == self.active
+            size = PIN + (4 if active else 0)
+            dim = 255 if active or c["state"] != "skipped" else 90
+            p.setPen(QPen(alpha(color, 70 if active else 40), 1))
+            p.drawLine(QPointF(x, y + size), QPointF(x, a.y() - 1))
+            p.setPen(QPen(alpha(T.TEXT, 230), 1.5) if active else Qt.PenStyle.NoPen)
+            p.setBrush(alpha(color, dim if active else min(dim, 215)))
+            box = QRectF(x - size / 2, y - (4 if active else 0), size, size)
+            p.drawEllipse(box)
+            draw_icon(p, icon, box.adjusted(3, 3, -3, -3), QColor(10, 6, 30), 2.4)
+
     def paint_pins(self, p, a):
         """A lane under the activity: kills, deaths and laughter, so the stream can be read at a glance."""
         y = a.bottom() + 5
@@ -130,7 +170,7 @@ class StreamMap(QWidget):
             kind = {"enemy_down": "kill", "you_down": "death", "clutch": "clutch"}.get(e["kind"])
             if kind:
                 p.setBrush(alpha(PINS[kind][1], 210))
-                p.drawEllipse(QPointF(self.x_of(e["t"]), y + 3), 1.8, 1.8)
+                p.drawEllipse(QPointF(self.x_of(e["t"]), y + 3), 2.4, 2.4)
         if self.laugh.size:
             count = max(int(a.width() // 4), 1)
             color = PINS["laugh"][1]

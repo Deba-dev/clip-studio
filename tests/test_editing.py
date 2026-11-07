@@ -116,9 +116,9 @@ def test_real_export_of_a_quiet_clip_with_a_cut_reaches_phone_loudness(tmp_path)
 
 
 def test_captions_use_the_chosen_colour():
-    assert captions.highlight("FF0000") == "{\\c&H0000FF&}"      # ASS writes blue first
+    assert captions.highlight("FF0000") == "{\\c&H000000FF&}"    # ASS writes alpha, then blue first
     words = [{"w": "a", "s": 0, "e": 1}]
-    assert "&H0000FF&" in captions.build_ass(words, 0, 2, color="FF0000")
+    assert "&H000000FF&" in captions.build_ass(words, 0, 2, color="FF0000")
 
 
 # ---- split and undo in the library
@@ -305,7 +305,8 @@ def test_noise_shaped_segments_are_dropped():
     assert transcribe.trusted(Segment())
     assert not transcribe.trusted(Segment(logprob=-1.6))
     assert not transcribe.trusted(Segment(ratio=3.0))
-    assert not transcribe.trusted(Segment(no_speech=.9))
+    assert not transcribe.trusted(Segment(no_speech=.9, logprob=-1.1))     # likely silence and unsure: nobody spoke
+    assert transcribe.trusted(Segment(no_speech=.9))        # confident words: the translator's no-speech score lies
 
 
 def test_words_in_a_script_nobody_spoke_are_dropped():

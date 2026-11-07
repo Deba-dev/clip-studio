@@ -68,6 +68,10 @@ The first analysis downloads the speech model, about 1.6 GB for the default size
 | `clipstudio/chat.py` | Twitch, Kick and YouTube chat logging, chat file import |
 | `clipstudio/worker.py` | The separate background process |
 | `clipstudio/fetch.py` | Downloads past streams and YouTube chat replay |
+| `clipstudio/insights.py` | Virality score, title ideas and hashtags |
+| `clipstudio/account.py`, `plans.py` | Sign-in, Premium, and the free plan's caps |
+| `clipstudio/ui/premium.py`, `ui/recent.py` | Premium screens, recent-streams picker |
+| `server/` | Licence server (Cloudflare Worker): sign-in, Razorpay, Paddle, gift keys. See `server/README.md` |
 | `clipstudio/upscale.py` | Optional AI upscaling with Real-ESRGAN for low-quality streams |
 | `clipstudio/cleanup.py` | Removes the app's own leftovers at start and after each update |
 | `clipstudio/ui/fx.py` | Motion system, icons and custom controls |

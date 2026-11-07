@@ -6,6 +6,8 @@ from collections import deque
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
+BACKGROUND = "captions"     # the one job that yields to everything else
+
 
 def worker_command(job, target):
     if getattr(sys, "frozen", False):
@@ -32,7 +34,19 @@ class Jobs(QObject):
     def add(self, job, target):
         if (job, target) == self.current or (job, target) in self.queue:
             return
-        self.queue.append((job, target))
+        if job == "export" and self.current and self.current[0] == BACKGROUND and self.proc:
+            # Background captions can take an hour. An export never waits for them: it goes first, then they resume
+            # from the next clip still waiting.
+            self.queue.appendleft(self.current)
+            self.queue.appendleft((job, target))
+            self.cancelled = True
+            self.proc.kill()
+            return
+        if job == BACKGROUND:
+            self.queue.append((job, target))
+        else:           # anything the user asked for goes ahead of background captions
+            spot = next((i for i, (j, _) in enumerate(self.queue) if j == BACKGROUND), len(self.queue))
+            self.queue.insert(spot, (job, target))
         self._next()
 
     def busy(self):

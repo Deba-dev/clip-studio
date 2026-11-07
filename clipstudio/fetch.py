@@ -199,3 +199,49 @@ def parse_live_chat(path):
                 author = (body.get("authorName") or {}).get("simpleText", "?")
                 rows.append((t, "youtube", author, text))
     return rows
+
+
+def channel_url(text):
+    """A channel's past-streams page from what a person types: @handle, a channel link, or a Twitch or Kick name."""
+    text = (text or "").strip().rstrip("/")
+    if not text:
+        return ""
+    low = text.lower()
+    if "twitch.tv/" in low:
+        name = re.split(r"twitch\.tv/", text, flags=re.I)[1].split("/")[0]
+        return "https://www.twitch.tv/%s/videos?filter=archives" % name
+    if "kick.com/" in low:
+        name = re.split(r"kick\.com/", text, flags=re.I)[1].split("/")[0]
+        return "https://kick.com/%s/videos" % name
+    if "youtube.com/" in low or "youtu.be/" in low:
+        base = re.sub(r"/(streams|videos|featured|live|shorts)$", "", text, flags=re.I)
+        return base + "/streams"
+    if text.startswith("@"):
+        return "https://www.youtube.com/%s/streams" % text
+    return "https://www.youtube.com/@%s/streams" % text
+
+
+def recent_streams(channel, limit=15):
+    """The channel's latest finished streams, newest first: id, title, url, duration, thumbnail."""
+    import yt_dlp
+    url = channel_url(channel)
+    if not url:
+        raise ValueError("Type your channel first, like @yourname.")
+    options = {**base_options(), "extract_flat": "in_playlist", "playlistend": limit}
+    try:
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        raise ValueError(friendly(e) if "unsupported" not in str(e).lower() else
+                         "That channel's past streams could not be listed. Paste a stream link instead.")
+    out = []
+    for e in info.get("entries") or []:
+        if not e or e.get("live_status") in ("is_live", "is_upcoming", "post_live"):
+            continue
+        link = e.get("url") or e.get("webpage_url") or ""
+        if link and not link.startswith("http"):
+            link = "https://www.youtube.com/watch?v=" + link
+        thumbs = e.get("thumbnails") or []
+        out.append({"id": e.get("id") or "", "title": e.get("title") or "Untitled stream", "url": link,
+                    "duration": float(e.get("duration") or 0), "thumbnail": thumbs[-1].get("url", "") if thumbs else ""})
+    return out

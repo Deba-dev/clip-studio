@@ -3,14 +3,17 @@ import os
 import tempfile
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QImage, QKeySequence, QPainter, QShortcut
 from PySide6.QtMultimedia import QMediaPlayer
-from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QScrollArea, QSlider, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QMessageBox, QPlainTextEdit, QScrollArea, QSlider, QSplitter, QStackedWidget,
+                               QVBoxLayout, QWidget)
 
 from .. import edit as clip_edit
 from .. import media
+from .. import captions as caps
+from .. import insights
 from ..captions import apply_text
 from ..paths import clip_thumb, signals_file
 from ..worker import parse_facecam
@@ -51,6 +54,81 @@ class Swatch(QWidget):
         p.setPen(T.TEXT if self.on else Qt.PenStyle.NoPen)
         p.setBrush(QColor("#" + self.color))
         p.drawEllipse(self.rect().adjusted(4, 4, -4, -4))
+
+
+class ColorPick(QWidget):
+    """A colour well with a name under it. Click to choose any colour."""
+    picked = Signal(str)
+
+    def __init__(self, title):
+        super().__init__()
+        self.title, self.color = title, "FFFFFF"
+        self.setFixedSize(58, 50)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Choose the " + title.lower() + " colour")
+
+    def set(self, color):
+        self.color = color
+        self.update()
+
+    def mousePressEvent(self, event):
+        chosen = QColorDialog.getColor(QColor("#" + self.color), self, "Choose the " + self.title.lower() + " colour")
+        if chosen.isValid():
+            self.set(chosen.name()[1:].upper())
+            self.picked.emit(self.color)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QColor(255, 255, 255, 60))
+        p.setBrush(QColor("#" + self.color))
+        p.drawRoundedRect(QRectF(15, 2, 28, 28), 8, 8)
+        p.setPen(T.MUTE)
+        p.drawText(QRectF(0, 32, self.width(), 16), Qt.AlignmentFlag.AlignCenter, self.title)
+
+
+class PresetChip(QWidget):
+    """One caption preset, drawn in its own style so the choice is visual."""
+    picked = Signal(str)
+
+    def __init__(self, key):
+        super().__init__()
+        self.key, self.on = key, False
+        self.style = caps.style_of({"caption_style": {"preset": key}})
+        self.setFixedHeight(40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(caps.PRESETS[key]["name"] + (" (premium)" if key in caps.PREMIUM_PRESETS else ""))
+
+    def mousePressEvent(self, event):
+        self.picked.emit(self.key)
+
+    def paintEvent(self, event):
+        from PySide6.QtGui import QFont, QPainterPath, QPen
+        st = self.style
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(T.A2 if self.on else QColor(255, 255, 255, 30), 2 if self.on else 1))
+        p.setBrush(QColor(14, 10, 40))
+        p.drawRoundedRect(r, 9, 9)
+        f = QFont()
+        f.setFamilies([st["font"], "Segoe UI"])
+        f.setPixelSize(15)
+        f.setBold(bool(st["bold"]))
+        name = caps.PRESETS[self.key]["name"]
+        text = name.upper() if st["upper"] else name
+        path = QPainterPath()
+        path.addText(0, 0, f, text)
+        box = path.boundingRect()
+        p.translate(r.center().x() - box.width() / 2 - box.x(), r.center().y() - box.height() / 2 - box.y())
+        if st["outline_width"]:
+            p.setPen(QPen(QColor("#" + st["outline"]), 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                          Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#" + (st["highlight"] if st["highlight_mode"] in ("color", "fill") else st["text"])))
+        p.drawPath(path)
 
 
 class Dial(QWidget):
@@ -99,11 +177,14 @@ class ReviewPage(QWidget):
     back = Signal()
     export = Signal(int)
     say = Signal(str, str)
+    upgrade = Signal(str)       # a Premium feature or a used-up free cap
+    compile = Signal(int, list, str)    # session, clip ids, title
 
     def __init__(self, library, settings=None):
         super().__init__()
         self.library = library
         self.settings = settings
+        self.gate = None            # set by the main window
         self.sid = None
         self.clip = None
         self.cards = []
@@ -128,10 +209,14 @@ class ReviewPage(QWidget):
         self.camera.clicked.connect(self.pick_facecam)
         self.export_kept = Button("Export kept clips", "export", primary=True)
         self.export_kept.clicked.connect(self.export_all)
+        self.make_compilation = Button("Make a compilation", "film")
+        self.make_compilation.setToolTip("Joins the kept clips you can see (use the filter for, say, only kills) into one video")
+        self.make_compilation.clicked.connect(self.compilation)
         head = QHBoxLayout()
         head.addWidget(back)
         head.addWidget(self.title, 1)
         head.addWidget(self.camera)
+        head.addWidget(self.make_compilation)
         head.addWidget(self.export_kept)
 
         self.list_body = QWidget()
@@ -149,6 +234,7 @@ class ReviewPage(QWidget):
         self.sort_box = QComboBox()
         self.sort_box.addItem("Best first", "score")
         self.sort_box.addItem("Stream order", "time")
+        self.sort_box.addItem("Most likely to go viral", "viral")
         self.sort_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.sort_box.currentIndexChanged.connect(lambda _: self.sort_cards())
         self.list_side = QWidget()
@@ -210,6 +296,7 @@ class ReviewPage(QWidget):
 
         self.map = StreamMap()
         self.map.picked.connect(self.map_clicked)
+        self.map.chosen.connect(self.pin_clicked)
         self.trim = TrimBar()
         self.trim.trimmed.connect(self.trim_done)
         self.trim.scrub.connect(self.seek)
@@ -331,8 +418,52 @@ class ReviewPage(QWidget):
         col.addSpacing(4)
         col.addWidget(self.heading("Length"))
         col.addLayout(edits)
+        col.addSpacing(4)
+        col.addWidget(self.heading("Post it"))
+        self.post_titles = QLabel("")
+        self.post_titles.setWordWrap(True)
+        self.post_titles.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.post_tags = QLabel("")
+        self.post_tags.setWordWrap(True)
+        self.post_tags.setObjectName("mute")
+        self.post_tags.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.post_copy = Button("Copy title and hashtags", "check")
+        self.post_copy.clicked.connect(self.copy_post)
+        col.addWidget(self.post_titles)
+        col.addWidget(self.post_tags)
+        col.addWidget(self.post_copy, 0, Qt.AlignmentFlag.AlignLeft)
         col.addStretch()
         return page
+
+    def allowed(self, feature):
+        return self.gate is None or self.gate.allowed(feature)
+
+    def session_info(self):
+        s = self.library.session(self.sid) if self.sid else None
+        return (s["game"] or "", s["language"] or "") if s else ("", "")
+
+    def show_post(self):
+        """Title ideas and hashtags for the selected clip, or a Premium invitation."""
+        if not self.clip:
+            return
+        if not self.allowed("titles"):
+            self.post_titles.setText("Title ideas and hashtags for every clip are part of Premium.")
+            self.post_tags.setText("")
+            self.post_copy.setText("See Premium")
+            return
+        game, language = self.session_info()
+        self.post_titles.setText("\n".join("• " + t for t in insights.titles(self.clip, game)))
+        self.post_tags.setText(" ".join(insights.hashtags(self.clip, game, language)))
+        self.post_copy.setText("Copy title and hashtags")
+
+    def copy_post(self):
+        if not self.allowed("titles"):
+            self.upgrade.emit("titles")
+            return
+        from PySide6.QtWidgets import QApplication
+        game, language = self.session_info()
+        QApplication.clipboard().setText(insights.post_text(self.clip, game, language))
+        self.say.emit("Title and hashtags copied", "good")
 
     def build_audio_tab(self):
         self.auto_loud = Toggle("Automatic loudness", True)
@@ -371,31 +502,168 @@ class ReviewPage(QWidget):
     def build_caption_tab(self):
         self.words = QPlainTextEdit()
         self.words.setPlaceholderText("No clear speech here, so nothing was guessed. Type captions yourself, or export without them.")
+        self.words.setMinimumHeight(70)
         self.save_timer = QTimer(self, singleShot=True, interval=500, timeout=self.save_words)
         self.words.textChanged.connect(self.words_typed)
-        self.cap_size = Dial("Text size", 50, 130, 2, "%d")
-        self.cap_size.moved.connect(lambda _: self.style_moved())
-        self.cap_size.done.connect(lambda v: self.set_edit(caption_size=int(v)))
-        self.cap_y = Dial("Height from bottom", 120, 1500, 20, "%d")
-        self.cap_y.moved.connect(lambda _: self.style_moved())
-        self.cap_y.done.connect(lambda v: self.set_edit(caption_y=int(v)))
+
+        self.presets = [PresetChip(k) for k in caps.PRESETS]
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        for i, chip in enumerate(self.presets):
+            chip.picked.connect(self.preset_picked)
+            grid.addWidget(chip, i // 2, i % 2)
+
+        self.cap_font = QComboBox()
+        for label, family in caps.FONTS:
+            self.cap_font.addItem(label, family)
+        self.cap_font.currentIndexChanged.connect(lambda _: self.set_style(font=self.cap_font.currentData()))
+        self.cap_mode = QComboBox()
+        for label, value in caps.HIGHLIGHTS:
+            self.cap_mode.addItem(label, value)
+        self.cap_mode.currentIndexChanged.connect(lambda _: self.set_style(highlight_mode=self.cap_mode.currentData()))
+        self.cap_anim = QComboBox()
+        for label, value in caps.ANIMATIONS:
+            self.cap_anim.addItem(label, value)
+        self.cap_anim.currentIndexChanged.connect(lambda _: self.set_style(animation=self.cap_anim.currentData()))
+
+        self.style_dials = {}
+        for title, low, high, step, text, key in (
+                ("Text size", 40, 170, 2, "%d", "size"), ("Height from bottom", 120, 1500, 20, "%d", "y"),
+                ("Words on screen", 1, 8, 1, "%d", "words"), ("Outline", 0, 16, 1, "%d", "outline_width"),
+                ("Shadow", 0, 10, 1, "%d", "shadow"), ("Box opacity", 0, 100, 5, "%d%%", "box_opacity"),
+                ("Tilt", -15, 15, 1, "%+d\u00b0", "tilt"), ("Letter spacing", -2, 12, 1, "%d", "spacing")):
+            dial = Dial(title, low, high, step, text)
+            dial.moved.connect(lambda _: self.style_moved())
+            dial.done.connect(lambda v, key=key: self.set_style(**{key: int(v)}))
+            self.style_dials[key] = dial
+        self.cap_toggles = {}
+        for title, key in (("UPPERCASE", "upper"), ("Bold", "bold"), ("Italic", "italic"), ("Box behind", "box")):
+            toggle = Toggle(title)
+            toggle.toggled.connect(lambda on, key=key: self.loading or self.set_style(**{key: on}))
+            self.cap_toggles[key] = toggle
+        self.cap_colors = {}
+        for title, key in (("Text", "text"), ("Highlight", "highlight"), ("Outline", "outline"),
+                           ("Shadow", "shadow_color"), ("Box", "box_color")):
+            well = ColorPick(title)
+            well.picked.connect(lambda c, key=key: self.set_style(**{key: c}))
+            self.cap_colors[key] = well
         self.swatches = [Swatch(c) for c in COLORS]
-        row = QHBoxLayout()
-        row.setSpacing(2)
-        row.addWidget(QLabel("Highlight"))
-        for s in self.swatches:
-            s.picked.connect(lambda c: self.set_edit(caption_color=c))
-            row.addWidget(s)
-        row.addStretch()
-        page = QWidget()
-        col = QVBoxLayout(page)
-        col.setContentsMargins(0, 4, 0, 0)
-        col.setSpacing(5)
-        col.addWidget(self.words, 1)
-        col.addWidget(self.cap_size)
-        col.addWidget(self.cap_y)
-        col.addLayout(row)
-        return page
+        quick = QHBoxLayout()
+        quick.setSpacing(2)
+        quick.addWidget(QLabel("Quick highlight"))
+        for sw in self.swatches:
+            sw.picked.connect(lambda c: self.set_style(highlight=c))
+            quick.addWidget(sw)
+        quick.addStretch()
+        wells = QHBoxLayout()
+        wells.setSpacing(4)
+        for well in self.cap_colors.values():
+            wells.addWidget(well)
+        wells.addStretch()
+        toggles = QGridLayout()
+        for i, t in enumerate(self.cap_toggles.values()):
+            toggles.addWidget(t, i // 2, i % 2)
+        everywhere = Button("Use on all clips", "check")
+        everywhere.setToolTip("Gives every clip of this stream this caption style, and makes it the style for new clips")
+        everywhere.clicked.connect(self.style_everywhere)
+        reset = Button("Reset to preset", flat=True)
+        reset.clicked.connect(self.style_reset)
+        buttons = QHBoxLayout()
+        buttons.addWidget(everywhere)
+        buttons.addWidget(reset)
+        buttons.addStretch()
+
+        heading = QLabel("Style")
+        heading.setObjectName("mute")
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 4, 8, 0)
+        col.setSpacing(6)
+        col.addWidget(self.words)
+        col.addWidget(heading)
+        col.addLayout(grid)
+        col.addLayout(buttons)
+        form = QGridLayout()
+        form.setHorizontalSpacing(8)
+        for row, (text, widget) in enumerate((("Font", self.cap_font), ("Highlight", self.cap_mode),
+                                              ("Animation", self.cap_anim))):
+            form.addWidget(QLabel(text), row, 0)
+            form.addWidget(widget, row, 1)
+        col.addLayout(form)
+        col.addLayout(wells)
+        col.addLayout(quick)
+        col.addLayout(toggles)
+        for dial in self.style_dials.values():
+            col.addWidget(dial)
+        col.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidget(body)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        return scroll
+
+    # ---- caption style
+    def default_style(self):
+        return (self.settings.get("caption_style_default") if self.settings else None) or {}
+
+    def current_style(self):
+        return caps.style_of(self.clip["edit"] if self.clip else {}, self.default_style())
+
+    def set_style(self, **values):
+        """Saves a style change on this clip only. Keys the user never touched keep following the preset."""
+        if not self.clip or self.loading:
+            return
+        own = dict(self.clip["edit"].get("caption_style") or {})
+        own.update(values)
+        self.set_edit(caption_style=own)
+
+    def preset_picked(self, key):
+        if self.clip and not self.loading:
+            self.set_edit(caption_style={"preset": key})
+
+    def style_reset(self):
+        if self.clip:
+            self.set_edit(caption_style={"preset": self.current_style()["preset"]})
+
+    def style_everywhere(self):
+        """One look for the whole stream, and for every new clip after it."""
+        if not self.clip:
+            return
+        if self.gate and not self.gate.allowed("style_all", self.sid):
+            self.upgrade.emit("style_all")
+            return
+        if self.gate:
+            self.gate.use("style_all", self.sid)
+        style = dict(self.clip["edit"].get("caption_style") or {"preset": self.current_style()["preset"]})
+        for c in self.library.clips(self.sid):
+            if c["id"] != self.clip["id"]:
+                self.library.update_clip(c["id"], edit={**c["edit"], "caption_style": style})
+        if self.settings:
+            self.settings.set("caption_style_default", style)
+        self.say.emit("This caption style is now on every clip, and new clips start with it", "good")
+        self.reload()
+
+    def show_style(self, st):
+        """Puts a style into the controls without saving anything."""
+        for chip in self.presets:
+            chip.on = chip.key == st["preset"]
+            chip.update()
+        for box, key in ((self.cap_font, "font"), (self.cap_mode, "highlight_mode"), (self.cap_anim, "animation")):
+            box.blockSignals(True)
+            box.setCurrentIndex(max(box.findData(st[key]), 0))
+            box.blockSignals(False)
+        for key, dial in self.style_dials.items():
+            dial.set(st[key])
+        for key, toggle in self.cap_toggles.items():
+            toggle.blockSignals(True)
+            toggle.setChecked(bool(st[key]))
+            toggle.blockSignals(False)
+        for key, well in self.cap_colors.items():
+            well.set(st[key])
+        for sw in self.swatches:
+            sw.on = sw.color == st["highlight"]
+            sw.update()
 
     def build_look_tab(self):
         self.layout_box = Segmented(LAYOUTS)
@@ -469,8 +737,12 @@ class ReviewPage(QWidget):
         clips = self.library.clips(self.sid)
         scores = [c["score"] for c in clips if c["score"] < 100]
         best = max(scores) if scores else 1.0
+        scored = self.allowed("virality")
         for i, c in enumerate(clips):
             card = ClipCard(c, clip_thumb(self.sid, c["peak"]), best)
+            if scored:
+                card.virality = insights.virality(c, best)
+                card.setToolTip("Virality %d: %s" % (card.virality, insights.label(card.virality)))
             card.clicked.connect(lambda card=card: self.select(self.cards.index(card)))
             self.list_col.insertWidget(i, card)
             self.cards.append(card)
@@ -482,8 +754,13 @@ class ReviewPage(QWidget):
     def sort_cards(self):
         """Reorders the list without touching the clips, so a selection survives."""
         current = self.cards[self.row] if 0 <= self.row < len(self.cards) else None
-        by_time = self.sort_box.currentData() == "time"
-        self.cards.sort(key=lambda c: c.clip["start"] if by_time else c.clip["rank"])
+        how = self.sort_box.currentData()
+        if how == "viral" and not self.allowed("virality"):
+            self.sort_box.setCurrentIndex(0)
+            self.upgrade.emit("virality")
+            return
+        self.cards.sort(key=lambda c: c.clip["start"] if how == "time" else
+                        -(c.virality or 0) if how == "viral" else c.clip["rank"])
         for i, card in enumerate(self.cards):
             self.list_col.removeWidget(card)
             self.list_col.insertWidget(i, card)
@@ -557,15 +834,13 @@ class ReviewPage(QWidget):
         self.gain.set(e["gain_db"])
         self.fade_in.set(e["fade_in"])
         self.fade_out.set(e["fade_out"])
-        self.cap_size.set(e["caption_size"])
-        self.cap_y.set(e["caption_y"])
         self.pan.set(e["pan"])
-        for s in self.swatches:
-            s.on = s.color == e["caption_color"]
-            s.update()
+        style = self.current_style()
+        self.show_style(style)
+        self.show_post()
         self.update_boost()
+        self.phone.set_style(e["pan"], style)
         self.phone.set_clip(c["words"], c["layout"], self.facecam())
-        self.phone.set_style(e["pan"], e["caption_size"], e["caption_y"], e["caption_color"])
         self.trim.load(self.loud, self.duration, c)
         self.map.set_active(c["id"])
         self.loading = False
@@ -584,8 +859,9 @@ class ReviewPage(QWidget):
 
     def style_moved(self):
         """Shows a drag on the phone straight away. The clip itself changes when the slider is let go."""
-        e = clip_edit.settings(self.clip) if self.clip else clip_edit.DEFAULTS
-        self.phone.set_style(self.pan.value(), self.cap_size.value(), self.cap_y.value(), e["caption_color"])
+        style = self.current_style()
+        style.update({key: int(dial.value()) for key, dial in self.style_dials.items()})
+        self.phone.set_style(self.pan.value(), style)
 
     # ---- editing
     def change(self, **fields):
@@ -821,6 +1097,15 @@ class ReviewPage(QWidget):
         playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
         self.player.pause() if playing else self.player.play()
 
+    def pin_clicked(self, cid):
+        """Opens the clip whose pin was clicked, even when a filter is hiding its card."""
+        row = next((i for i, card in enumerate(self.cards) if card.clip["id"] == cid), -1)
+        if row >= 0:
+            if not self.cards[row].isVisible():
+                self.filter_box.set("")
+                self.apply_filter()
+            self.select(row)
+
     def map_clicked(self, t):
         """Clicking inside a clip opens it. Clicking anywhere else just looks at that part of the stream."""
         for i, card in enumerate(self.cards):
@@ -838,7 +1123,27 @@ class ReviewPage(QWidget):
         if self.clip:
             self.export.emit(self.clip["id"])
 
+    def compilation(self):
+        """The kept clips the filter shows, joined in stream order: 'only kills' gives a kills montage."""
+        if not self.allowed("compilation"):
+            self.upgrade.emit("compilation")
+            return
+        chosen = [c.clip for c in self.cards if c.isVisible() and c.clip["state"] in ("kept", "exported")]
+        if len(chosen) < 2:
+            self.say.emit("Keep at least two clips (K) for a compilation. The filter picks which kind.", "info")
+            return
+        self.save_words()
+        kind = {"": "", "funny": "funny moments", "kills": "kills", "deaths": "deaths", "hype": "hype"}.get(
+            self.filter_box.value(), "")
+        session = self.library.session(self.sid)
+        title = "Best %sof %s" % (kind + " " if kind else "", session["name"][:50])
+        self.compile.emit(self.sid, [c["id"] for c in chosen], title)
+        self.say.emit("Making a %d-clip compilation. It is saved with your clips." % len(chosen), "good")
+
     def export_all(self):
+        if self.gate and not self.gate.allowed("batch"):
+            self.upgrade.emit("batch")
+            return
         self.save_words()
         for c in self.library.clips(self.sid):
             if c["state"] == "kept":

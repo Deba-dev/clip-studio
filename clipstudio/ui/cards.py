@@ -175,12 +175,15 @@ class ClipCard(Card):
         self.ring = 0.0
         self.flash = 0.0
         self.export = 0.0
+        self.virality = None        # 0-99 when the plan includes virality scores; then the ring shows it
 
     def enter(self, order=0):
         super().enter(order)
         tween(self, "ring", self.value(), 800, QEasingCurve.Type.OutCubic, delay=min(order, 12) * 45 + 120)
 
     def value(self):
+        if self.virality is not None:
+            return self.virality / 100
         return 1.0 if self.clip["score"] >= 100 else min(self.clip["score"] / self.best, 1.0)
 
     def set_clip(self, clip):
@@ -243,6 +246,8 @@ class ClipCard(Card):
         p.setFont(font(11))
         p.setPen(T.MUTE)
         status = {"kept": "Kept", "skipped": "Skipped", "exported": "Exported"}.get(state, clock(c["start"]))
+        if c.get("captioned") == "0" and state == "new":
+            status += "  ·  captions soon"
         icon = {"kept": "check", "skipped": "x", "exported": "export"}.get(state)
         y = r.bottom() - 26
         tx = x

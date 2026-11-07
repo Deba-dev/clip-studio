@@ -22,6 +22,8 @@ from .cards import WORKING, StreamCard, clock
 from .fx import (MOTION, Aurora, Button, Confetti, Pages, Toast, Toggle, alpha, draw_icon, draw_ring, font, glow, mix,
                  panel, tween)
 from .jobs import Jobs
+from .premium import AccountHub, PremiumSection, UpgradeDialog
+from .recent import RecentDialog
 from .review import ReviewPage
 
 HOTKEY_ID = 7301
@@ -527,8 +529,11 @@ class StreamsPage(QWidget):
         link.clicked.connect(lambda: self.w.sheet.present(self.w.settings.get("downloads_folder")))
         file = ActionTile("file", "Add a recording", "Use a video file already on this PC")
         file.clicked.connect(self.import_video)
+        recent = ActionTile("film", "Clip your recent streams", "Pick finished streams from your channel")
+        recent.clicked.connect(self.pick_recent)
         tiles = QHBoxLayout()
         tiles.setSpacing(0)
+        tiles.addWidget(recent)
         tiles.addWidget(link)
         tiles.addWidget(file)
         self.pipeline = Pipeline()
@@ -611,6 +616,17 @@ class StreamsPage(QWidget):
 
     def show_menu(self, m, pos):
         m.exec(pos)
+
+    def pick_recent(self):
+        dialog = RecentDialog(self.w, self.w.settings, self.w.library)
+        dialog.chosen.connect(self.add_recent)
+        dialog.exec()
+
+    def add_recent(self, links):
+        folder = self.w.settings.get("downloads_folder")
+        for url in links:
+            self.w.add_link(url, folder)
+        self.w.toast("%d stream%s queued. Each downloads, then gets clipped." % (len(links), "" if len(links) == 1 else "s"))
 
     def import_video(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose a recording", "", VIDEO_FILTER)
@@ -701,6 +717,8 @@ class SettingsPage(QWidget):
             self.wants[key] = slider
         self.roman = Toggle("Write Hindi captions in Roman letters (bhai, kya)", bool(s.get("roman_script")))
         self.clips = QSpinBox(minimum=1, maximum=40, value=int(s.get("max_clips")))
+        self.clips.setToolTip("Every moment found becomes a clip. This many get captions right away, so you can start "
+                              "reviewing sooner; the rest are captioned in the background.")
         self.length = QSpinBox(minimum=15, maximum=59, value=int(s.get("clip_length")), suffix=" s")
         self.size = QComboBox()
         for label, value in (("720 x 1280 (smaller files)", "720"), ("1080 x 1920 (standard)", "1080"),
@@ -739,7 +757,7 @@ class SettingsPage(QWidget):
         clips.form.addRow("Stream language", self.language)
         clips.form.addRow("Captions", self.caption_mode)
         clips.form.addRow("", self.roman)
-        clips.form.addRow("Clips per stream", self.clips)
+        clips.form.addRow("Captioned right away", self.clips)
         clips.form.addRow("Usual clip length", self.length)
         export = Section("Export")
         export.form.addRow("Resolution", self.size)
@@ -750,6 +768,10 @@ class SettingsPage(QWidget):
                            ("deaths", "Deaths you react to"), ("hype", "Loud or busy-chat moments")):
             want.form.addRow(label, self.wants[key])
         want.form.addRow("", QLabel("Left is never, the middle is normal, right is more. Used on the next analysis."))
+        premium = Section("Premium")
+        self.premium = PremiumSection(window.hub)
+        self.premium.upgrade.connect(lambda: self.w.upgrade())
+        premium.form.addRow(self.premium)
         look = Section("Look and updates")
         look.form.addRow("", self.motion)
         self.check = Button("Check for updates", "down")
@@ -772,9 +794,10 @@ class SettingsPage(QWidget):
         grid.addWidget(live, 1, 0)
         grid.addWidget(clips, 0, 1)
         grid.addWidget(look, 1, 1)
-        grid.addWidget(export, 2, 0, 1, 2)
-        grid.addWidget(want, 3, 0, 1, 2)
-        grid.addWidget(folders, 4, 0, 1, 2)
+        grid.addWidget(premium, 2, 0, 1, 2)
+        grid.addWidget(export, 3, 0, 1, 2)
+        grid.addWidget(want, 4, 0, 1, 2)
+        grid.addWidget(folders, 5, 0, 1, 2)
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 8, 0)
@@ -795,7 +818,28 @@ class SettingsPage(QWidget):
         self.w.settings.set(key, path)
         self.w.toast("Folder saved" if path else "Back to automatic")
 
+    def premium_choices(self):
+        """Premium-only choices fall back to their free versions, with one upgrade prompt naming the first."""
+        gate, blocked = self.w.gate, None
+        for feature, box, free in (("english", self.caption_mode, "spoken"), ("1440", self.size, "1080"),
+                                   ("60fps", self.fps, "30"), ("upscale", self.enhance, "auto")):
+            chosen = box.currentData()
+            premium_pick = {"english": chosen == "english", "1440": chosen == "1440",
+                            "60fps": chosen in ("60", "source"), "upscale": chosen == "ai"}[feature]
+            if premium_pick and not gate.allowed(feature):
+                box.setCurrentIndex(max(box.findData(free), 0))
+                blocked = blocked or feature
+        changed = any(v.value() != int(self.w.settings.get("want_" + k)) for k, v in self.wants.items())
+        if changed and not gate.allowed("weights"):
+            for k, v in self.wants.items():
+                v.setValue(int(self.w.settings.get("want_" + k)))
+            blocked = blocked or "weights"
+        elif changed:
+            gate.use("weights")
+        return blocked
+
     def save(self):
+        blocked = self.premium_choices()
         for key, value in (("obs_host", self.host.text().strip()), ("obs_port", self.port.value()),
                            ("obs_password", self.password.text()), ("twitch_channel", self.twitch.text().strip()),
                            ("kick_channel", self.kick.text().strip()), ("youtube_video", self.youtube.text().strip()),
@@ -809,7 +853,9 @@ class SettingsPage(QWidget):
             self.w.settings.set(key, value)
         MOTION.set(reduced=self.motion.isChecked())
         self.w.connect_obs()
-        self.w.toast("Settings saved")
+        self.w.toast("Settings saved" if not blocked else "Settings saved. Some choices need Premium, so the free versions are set.")
+        if blocked:
+            self.w.upgrade(blocked)
 
 
 class MainWindow(QMainWindow):
@@ -846,6 +892,8 @@ class MainWindow(QMainWindow):
         self.updater.ready.connect(self.update_ready)
         self.update_info = None
         self.update_path = ""
+        self.hub = AccountHub(self.settings)
+        self.gate = self.hub.gate
 
         root = Aurora()
         self.setCentralWidget(root)
@@ -857,7 +905,10 @@ class MainWindow(QMainWindow):
         self.streams.banner.update_now.connect(self.start_update)
         self.review = ReviewPage(self.library, self.settings)
         self.review.back.connect(lambda: self.goto(0))
-        self.review.export.connect(lambda cid: self.jobs.add("export", cid))
+        self.review.export.connect(self.export_clip)
+        self.review.gate = self.gate
+        self.review.upgrade.connect(self.upgrade)
+        self.review.compile.connect(self.compile_clips)
         self.review.say.connect(self.toast)
         self.settings_page = SettingsPage(self)
         for page in (self.streams, self.settings_page, self.review):
@@ -871,6 +922,8 @@ class MainWindow(QMainWindow):
         self.sheet.submitted.connect(self.add_link)
         self.streams.refresh()
         freed = self.clean_up() if use_obs else 0
+        if use_obs:
+            self.hub.refresh_quietly()
         self.recover_interrupted()
         if use_obs:
             self.connect_obs()
@@ -917,6 +970,8 @@ class MainWindow(QMainWindow):
         for s in self.library.sessions():
             if s["status"] in ("analyzing", "fetching"):
                 self.analyze(s["id"])
+            elif s["status"] == "ready" and self.library.uncaptioned(s["id"]):
+                self.jobs.add("captions", s["id"])      # background captions carry on where they stopped
 
     def goto(self, index):
         self.stack.go((self.streams, self.settings_page)[index])
@@ -1033,8 +1088,41 @@ class MainWindow(QMainWindow):
         sid = self.library.add_session("Getting stream details...", "", url=url, folder=folder)
         self.analyze(sid)
 
+    def upgrade(self, feature=None, text=""):
+        UpgradeDialog(self, self.hub, feature, text).exec()
+
+    def export_options(self):
+        s = self.settings
+        fps = 120 if s.get("export_fps") == "source" else int(s.get("export_fps"))
+        return self.gate.export_options(str(s.get("export_size")), fps, s.get("enhance"))
+
+    def compile_clips(self, sid, clip_ids, title):
+        import json
+        from ..worker import compile_request
+        with open(compile_request(sid), "w", encoding="utf-8") as f:
+            json.dump({"clips": clip_ids, "title": title}, f)
+        self.jobs.add("compile", sid)
+
+    def export_clip(self, cid):
+        """Every export goes through the plan first, so the free plan's caps hold in one place."""
+        clip = self.library.clip(cid)
+        if clip is None:
+            return
+        blocked = self.gate.export_check(clip, self.export_options()[2], self.settings.get("caption_style_default"))
+        if blocked:
+            self.upgrade(blocked)
+            return
+        self.jobs.add("export", cid)
+
     def analyze(self, sid):
         session = self.library.session(sid)
+        if self.gate.free_limits() and not self.gate.allowed("streams", sid):
+            message = self.gate.why_not("streams")
+            self.library.update_session(sid, status="failed", error=message)
+            self.streams.refresh()
+            if self.isVisible():
+                self.upgrade("streams")
+            return
         needs_download = bool(session["url"]) and not session["source"]
         self.library.update_session(sid, status="fetching" if needs_download else "analyzing", error="")
         self.streams.refresh()
@@ -1053,6 +1141,10 @@ class MainWindow(QMainWindow):
         session = self.library.session(target)
         if session is None:
             return
+        if job == "captions" and note != getattr(self, "caption_note", "") and self.review.sid == target:
+            self.caption_note = note        # one more clip has its captions: show them without a full reload
+            if self.stack.currentWidget() is self.review:
+                self.review.reload()
         if self.streams.pipeline.t < .5 or self.streams.pipeline.title != session["name"]:
             self.streams.pipeline.open(session["name"])
         self.streams.pipeline.report(stage, value, note)
@@ -1068,6 +1160,10 @@ class MainWindow(QMainWindow):
     def on_job_done(self, job, target, result):
         if job == "export":
             self.review.export_progress(target, 0)
+            if "path" in result:
+                clip = self.library.clip(target)
+                if clip:
+                    self.gate.record_export(clip, self.export_options()[2], self.settings.get("caption_style_default"))
             if "error" in result:
                 self.toast(result["error"], "bad")
             elif "path" in result:
@@ -1075,6 +1171,14 @@ class MainWindow(QMainWindow):
                 if MOTION.on and self.stack.currentWidget() is self.review:
                     root = self.centralWidget()
                     Confetti(root, self.review.burst_origin(root))
+        elif job == "compile":
+            if "path" in result:
+                self.toast("Compilation saved: " + os.path.basename(result["path"]))
+            elif "error" in result:
+                self.toast(result["error"], "bad")
+        elif job == "captions":
+            if "error" in result:           # quiet: the clips are fine, they just wait for the next try
+                print("captions:", result["error"])
         elif "busy" in result:
             self.toast("This stream is already being processed", "info")
         else:
@@ -1082,11 +1186,19 @@ class MainWindow(QMainWindow):
                 self.library.update_session(target, status="stopped", error="Stopped. Use the card menu to continue.")
             elif "error" in result:
                 self.library.update_session(target, status="failed", error=result["error"][:200])
-                self.toast(result["error"], "bad")
+                if result.get("upgrade") and result["upgrade"] != "too_long":
+                    self.upgrade(result["upgrade"], result["error"])
+                else:
+                    self.toast(result["error"], "bad")
             else:
                 session = self.library.session(target)
+                self.gate.record_stream(session["duration"] or 0, target)
                 count = len(self.library.clips(target))
-                self.toast("%d clips ready from %s" % (count, session["name"][:40]))
+                waiting = len(self.library.uncaptioned(target))
+                self.toast("%d clips ready from %s" % (count, session["name"][:40]) +
+                           (". Captions for %d more are being written." % waiting if waiting else ""))
+                if waiting:
+                    self.jobs.add("captions", target)
             self.streams.refresh()
         if self.stack.currentWidget() is self.review and self.review.sid:
             self.review.reload()
