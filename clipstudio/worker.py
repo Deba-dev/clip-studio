@@ -89,11 +89,16 @@ def do_export(library, cid):
     session = library.session(clip["session"])
     try:
         info = probe(session["source"])
-        folder = Settings().get("exports_folder") or exports_dir()
+        settings = Settings()
+        folder = settings.get("exports_folder") or exports_dir()
         os.makedirs(folder, exist_ok=True)
+        out = render.SIZES.get(str(settings.get("export_size")), render.SIZES["1080"])
+        fps = render.frame_rate(settings.get("export_fps"), info["fps"])
         path = render.export_clip(session["source"], clip, (info["width"], info["height"]), folder,
                                   parse_facecam(session["facecam"]),
-                                  lambda v: say(stage="Exporting", value=round(v, 3)), info["audio_tracks"] > 0)
+                                  lambda v, note="": say(stage="Exporting", value=round(v, 3), note=note),
+                                  info["audio_tracks"] > 0,
+                                  out=out, fps=fps, enhance=settings.get("enhance"))
         library.update_clip(cid, state="exported", exported=path)
         say(done=True, path=path)
     except Exception as e:

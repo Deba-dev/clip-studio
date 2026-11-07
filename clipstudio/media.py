@@ -37,7 +37,21 @@ def probe(source):
     if video is None:
         raise RuntimeError("This file has no video track.")
     return {"duration": float(info["format"].get("duration") or video.get("duration") or 0),
-            "width": int(video["width"]), "height": int(video["height"]), "audio_tracks": len(audio)}
+            "width": int(video["width"]), "height": int(video["height"]), "audio_tracks": len(audio),
+            "fps": rate_of(video)}
+
+
+def rate_of(video):
+    """Frames per second, or 0 when unknown. The average comes first: OBS can write a nominal rate it never hits."""
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        top, _, bottom = str(video.get(key) or "").partition("/")
+        try:
+            value = float(top) / float(bottom or 1)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if 1 <= value <= 240:
+            return value
+    return 0.0
 
 
 def loudness_per_second(source, track=0, on_progress=None, total=0.0, tap=None):

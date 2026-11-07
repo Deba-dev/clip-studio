@@ -99,7 +99,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: Clip Studio ${{ github.ref_name }} (early test version)
-          prerelease: true
+          name: Clip Studio ${{ github.ref_name }}
+          prerelease: false
+          make_latest: true
           body_path: RELEASE_NOTES.md
           files: installer/ClipStudio-Setup.exe

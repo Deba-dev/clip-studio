@@ -115,3 +115,13 @@ def estimate_gain(levels, clip):
     if level is None:
         return edit["gain_db"]
     return max(min(TARGET_LUFS - level + METER_OFFSET, 24.0), -12.0) + edit["gain_db"]
+
+
+def shifted(clip, offset):
+    """The same clip with every stream time moved back by offset, for a copy of the video that starts at offset."""
+    e = settings(clip)
+    edit = {**(clip.get("edit") or {}),
+            "cuts": [[a - offset, b - offset] for a, b in e["cuts"]],
+            "mute": [[a - offset, b - offset] for a, b in e["mute"]]}
+    words = [{**w, "s": w["s"] - offset, "e": w["e"] - offset} for w in clip.get("words") or []]
+    return {**clip, "start": clip["start"] - offset, "end": clip["end"] - offset, "edit": edit, "words": words}

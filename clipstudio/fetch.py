@@ -6,8 +6,10 @@ import shutil
 
 from .paths import tool
 
-FORMAT = ("bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080]+ba/"
-          "b[height<=1080]/bv*+ba/b")
+FORMAT = "bv*[vcodec^=avc1]+ba[ext=m4a]/bv*+ba/b"
+# "res" is the smaller side, so a vertical 1080x1920 stream counts as 1080p. Capping height instead left vertical
+# streams with only their 360p copy. At equal size, the live copy usually has the higher bitrate, so it wins.
+SORT = ["res:1080", "fps", "tbr"]
 KEEP_FREE = 5e9                     # never leave a drive with less than this
 TYPICAL_BYTES_PER_SECOND = 700_000
 PLATFORMS = (("youtube", re.compile(r"^https?://(www\.|m\.)?(youtube\.com/(watch|live/)|youtu\.be/)", re.I)),
@@ -56,7 +58,7 @@ def base_options():
 
 def inspect(url):
     import yt_dlp
-    with yt_dlp.YoutubeDL({**base_options(), "format": FORMAT}) as ydl:
+    with yt_dlp.YoutubeDL({**base_options(), "format": FORMAT, "format_sort": SORT}) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("is_live") or info.get("live_status") in ("is_live", "is_upcoming", "post_live"):
         raise ValueError("This stream is still live or still processing. Try again once the platform has finished it.")
@@ -152,7 +154,8 @@ def download(url, folder, on_progress=lambda value, note: None):
             done = d.get("downloaded_bytes") or 0
             on_progress(done / total if total else 0.0, describe(done, total, d.get("eta")))
 
-    options = {**base_options(), "format": FORMAT, "merge_output_format": "mp4/mkv", "continuedl": True,
+    options = {**base_options(), "format": FORMAT, "format_sort": SORT, "merge_output_format": "mp4/mkv",
+               "continuedl": True,
                "outtmpl": os.path.join(folder, "%(title).70B [%(id)s].%(ext)s"), "progress_hooks": [hook]}
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=True)

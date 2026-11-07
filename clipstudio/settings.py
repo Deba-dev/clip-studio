@@ -14,6 +14,7 @@ DEFAULTS = {
     "want_funny": 100, "want_kills": 100, "want_deaths": 100, "want_hype": 100,
     "review_split": [],
     "max_clips": 12, "clip_length": 45, "reduce_motion": False,
+    "export_size": "1080", "export_fps": "source", "enhance": "auto",
     "downloads_folder": "", "exports_folder": "", "update_pending": "",
 }
 SECRET = {"obs_password"}

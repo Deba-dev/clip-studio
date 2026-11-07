@@ -12,7 +12,7 @@ The market research behind these decisions is in [reports/Stream clipping tools 
    - Pass 2 reads the keyframes for the game's own HUD. In Valorant that gives kills, your deaths, clutches and which parts are menus. Other games use sound, speech and chat.
    - Pass 3 runs speech recognition only on the shortlisted clips, which keeps it fast without a GPU.
 3. **Review desk:** each clip says why it was picked and carries a tag: Funny, Kill, Death or Hype. A live phone preview shows the real layout, captions and loudness. Cut, split, trim, mute, fade and change caption style, with undo and redo on all of it.
-4. **Export:** clips render at 1080x1920 at -14 LUFS, the level phones play at, with a hardware encoder when one works.
+4. **Export:** clips render at 720p, 1080p or 1440p, at the stream's frame rate up to 60 fps, and at -14 LUFS, the level phones play at, with a hardware encoder when one works. Low-quality streams can be cleaned up and sharpened, or AI upscaled on the graphics card.
 
 ## Editing keys
 
@@ -68,6 +68,8 @@ The first analysis downloads the speech model, about 1.6 GB for the default size
 | `clipstudio/chat.py` | Twitch, Kick and YouTube chat logging, chat file import |
 | `clipstudio/worker.py` | The separate background process |
 | `clipstudio/fetch.py` | Downloads past streams and YouTube chat replay |
+| `clipstudio/upscale.py` | Optional AI upscaling with Real-ESRGAN for low-quality streams |
+| `clipstudio/cleanup.py` | Removes the app's own leftovers at start and after each update |
 | `clipstudio/ui/fx.py` | Motion system, icons and custom controls |
 | `clipstudio/ui/phone.py` | Live 9:16 preview |
 | `clipstudio/ui/timeline.py` | Activity map and trim bar |

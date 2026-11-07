@@ -339,3 +339,39 @@ def test_sound_lanes_pool_to_the_right_second():
     rows[4, 13] = .7            # row 4 covers 1.92 s to 2.88 s
     sound.pool(rows, 0.0, s)
     assert s["laugh"].argmax() == 2 and s["laugh"].max() == pytest.approx(.7)
+
+
+@pytest.mark.parametrize("layout,cam", [("stack", (0, 0, 300, 200)), ("blur", None), ("crop", None)])
+@pytest.mark.parametrize("out", list(render.SIZES.values()))
+def test_every_export_size_fills_the_frame_with_released_filters(layout, cam, out):
+    graph = render.layout_filter(layout, (640, 360), cam, out=out, enhance="auto")
+    assert filters_in(graph) <= set(render.FILTERS), filters_in(graph) - set(render.FILTERS)
+    assert "atadenoise" in graph                              # 360p counts as low quality
+    assert ("cas=" in graph) == (render.enlargement(layout, (640, 360), out, cam) >= render.SHARPEN_FROM)
+    assert "%d:%d" % out in graph or "crop=%d:" % out[0] in graph
+
+
+def test_enhance_leaves_a_good_source_alone_unless_it_is_enlarged():
+    assert "atadenoise" not in render.layout_filter("blur", (1920, 1080), enhance="auto")
+    assert "cas=" not in render.layout_filter("blur", (1920, 1080), enhance="auto")      # 1920 wide fits 1080
+    assert "cas=" in render.layout_filter("crop", (1920, 1080), enhance="auto")          # cropping enlarges 1.8x
+    assert "cas=" not in render.layout_filter("crop", (1920, 1080), enhance="off")
+
+
+def test_frame_rate_never_invents_frames():
+    assert render.frame_rate("source", 60) == 60
+    assert render.frame_rate("source", 144) == 60
+    assert render.frame_rate("60", 30) == 30
+    assert render.frame_rate("30", 59.94) == 30
+    assert render.frame_rate("source", 0) == 30
+
+
+@pytest.mark.skipif(not shutil.which(tool("ffmpeg")), reason="needs FFmpeg")
+def test_real_export_uses_the_chosen_size_and_rate(tmp_path):
+    video = tmp_path / "v.mp4"
+    make_video(video, 4)
+    path = render.export_clip(str(video), clip(0.5, 3.5), (640, 360), str(tmp_path), out=(720, 1280), fps=24,
+                              enhance="auto")
+    out = subprocess.run([tool("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=width,height,r_frame_rate", "-of", "csv=p=0", path], capture_output=True, text=True)
+    assert out.stdout.strip() == "720,1280,24/1"

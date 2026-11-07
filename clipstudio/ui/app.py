@@ -10,7 +10,7 @@ from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QLin
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QSlider,
                                QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
-from .. import chat, fetch
+from .. import chat, cleanup, fetch
 from ..db import Library
 from ..obs import ObsClient, RecordingTracker
 from ..paths import exports_dir, session_thumb, tool
@@ -657,6 +657,11 @@ class Section(QWidget):
         panel(p, QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 14)
 
 
+def choose(box, value, fallback=0):
+    found = box.findData(value)
+    box.setCurrentIndex(found if found >= 0 else fallback)
+
+
 class SettingsPage(QWidget):
     def __init__(self, window):
         super().__init__()
@@ -697,6 +702,28 @@ class SettingsPage(QWidget):
         self.roman = Toggle("Write Hindi captions in Roman letters (bhai, kya)", bool(s.get("roman_script")))
         self.clips = QSpinBox(minimum=1, maximum=40, value=int(s.get("max_clips")))
         self.length = QSpinBox(minimum=15, maximum=59, value=int(s.get("clip_length")), suffix=" s")
+        self.size = QComboBox()
+        for label, value in (("720 x 1280 (smaller files)", "720"), ("1080 x 1920 (standard)", "1080"),
+                             ("1440 x 2560 (sharpest after upload)", "1440")):
+            self.size.addItem(label, value)
+        choose(self.size, str(s.get("export_size")), 1)
+        self.size.setToolTip("YouTube gives 1440p uploads a better encode, so they stay sharper on phones. "
+                             "Higher sizes take longer to export.")
+        self.fps = QComboBox()
+        for label, value in (("Match the stream (up to 60)", "source"), ("60 fps", "60"),
+                             ("30 fps (faster export)", "30"), ("24 fps", "24")):
+            self.fps.addItem(label, value)
+        self.fps.setCurrentIndex(max(self.fps.findData(str(s.get("export_fps"))), 0))
+        self.fps.setToolTip("A clip never gets more frames than its stream has")
+        self.enhance = QComboBox()
+        for label, value in (("Leave it as it is", "off"), ("Clean up and sharpen (fast)", "auto"),
+                             ("AI upscale (best, a few minutes per clip)", "ai")):
+            self.enhance.addItem(label, value)
+        choose(self.enhance, s.get("enhance"), 1)
+        self.enhance.setToolTip("Clean up smooths compression blocks below 720p and sharpens any picture that is "
+                                "enlarged for the phone screen.\nAI upscale redraws streams below 1080p at 2-4x with "
+                                "Real-ESRGAN on your graphics card. It needs a one-time 45 MB download and Vulkan. "
+                                "Good streams use the fast clean up instead.")
         self.motion = Toggle("Reduce motion", bool(s.get("reduce_motion")))
         self.motion.setToolTip("Animations already pause by themselves while OBS records or streams")
         obs = Section("OBS")
@@ -714,6 +741,10 @@ class SettingsPage(QWidget):
         clips.form.addRow("", self.roman)
         clips.form.addRow("Clips per stream", self.clips)
         clips.form.addRow("Usual clip length", self.length)
+        export = Section("Export")
+        export.form.addRow("Resolution", self.size)
+        export.form.addRow("Frame rate", self.fps)
+        export.form.addRow("Low-quality video", self.enhance)
         want = Section("What to look for")
         for key, label in (("funny", "Funny moments (laughter)"), ("kills", "Kills and clutches"),
                            ("deaths", "Deaths you react to"), ("hype", "Loud or busy-chat moments")):
@@ -741,8 +772,9 @@ class SettingsPage(QWidget):
         grid.addWidget(live, 1, 0)
         grid.addWidget(clips, 0, 1)
         grid.addWidget(look, 1, 1)
-        grid.addWidget(want, 2, 0, 1, 2)
-        grid.addWidget(folders, 3, 0, 1, 2)
+        grid.addWidget(export, 2, 0, 1, 2)
+        grid.addWidget(want, 3, 0, 1, 2)
+        grid.addWidget(folders, 4, 0, 1, 2)
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 8, 0)
@@ -771,6 +803,8 @@ class SettingsPage(QWidget):
                            ("roman_script", self.roman.isChecked()), ("max_clips", self.clips.value()),
                            ("clip_length", self.length.value()), ("reduce_motion", self.motion.isChecked()),
                            ("caption_mode", self.caption_mode.currentData()),
+                           ("export_size", self.size.currentData()), ("export_fps", self.fps.currentData()),
+                           ("enhance", self.enhance.currentData()),
                            *(("want_" + k, v.value()) for k, v in self.wants.items())):
             self.w.settings.set(key, value)
         MOTION.set(reduced=self.motion.isChecked())
@@ -836,6 +870,7 @@ class MainWindow(QMainWindow):
         self.sheet = LinkSheet(root)
         self.sheet.submitted.connect(self.add_link)
         self.streams.refresh()
+        freed = self.clean_up() if use_obs else 0
         self.recover_interrupted()
         if use_obs:
             self.connect_obs()
@@ -843,9 +878,22 @@ class MainWindow(QMainWindow):
             problem = self.updater.after_start()
             if problem:
                 QTimer.singleShot(1500, self, lambda: self.toast(problem, "bad"))
+            elif freed >= 50e6:
+                QTimer.singleShot(1500, self, lambda: self.toast("Cleared %.1f GB of old files" % (freed / 1e9)))
             QTimer.singleShot(8000, self, self.background_check)
             self.update_timer = QTimer(self, interval=6 * 3600 * 1000, timeout=self.background_check)
             self.update_timer.start()
+
+    def clean_up(self):
+        """Old installers and crashed exports go at every start. After an update, so do unused models and leftovers."""
+        try:
+            if self.settings.get("cleaned_version") == VERSION:
+                return cleanup.light(self.settings)
+            freed = cleanup.full(self.library, self.settings)
+            self.settings.set("cleaned_version", VERSION)
+            return freed
+        except Exception:
+            return 0                # cleaning up must never stop the app from opening
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -996,6 +1044,11 @@ class MainWindow(QMainWindow):
         job, target = self.jobs.current or ("", 0)
         if job == "export":
             self.review.export_progress(target, value)
+            phase = note[:12]            # one message per phase, not one per percent
+            if phase != getattr(self, "export_phase", "") and note.startswith(("AI", "Getting the AI")):
+                self.toast("Getting the AI upscaler, a one-time 45 MB download" if note.startswith("Getting")
+                           else "AI upscaling this clip. It takes a couple of minutes.")
+            self.export_phase = phase
             return
         session = self.library.session(target)
         if session is None:

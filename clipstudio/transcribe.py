@@ -2,9 +2,11 @@
 import ctypes
 import os
 import re
+import shutil
 from collections import Counter
 
 from .media import audio_window
+from .paths import data_dir
 from .roman import to_roman
 
 HALLUCINATIONS = re.compile(r"(thanks? for watching|subscribe|subtitles? by|amara\.org)", re.I)
@@ -41,11 +43,48 @@ def _cuda_libraries_present():
     return False
 
 
+# Where faster-whisper fetches each model the app offers, so cleanup knows them without importing it.
+REPOS = {"large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "medium": "Systran/faster-whisper-medium",
+         "small": "Systran/faster-whisper-small", "base": "Systran/faster-whisper-base"}
+
+
+def models_dir():
+    """The app's own model folder, so an update can remove unused models without touching other apps' files."""
+    path = os.path.join(data_dir(), "models", "whisper")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def cache_name(name):
+    return "models--" + REPOS[name].replace("/", "--")
+
+
+def shared_cache():
+    return os.environ.get("HF_HUB_CACHE") or os.path.join(
+        os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface"), "hub")
+
+
+def adopt(name):
+    """Older versions kept models in the shared Hugging Face folder. Moving one is instant and saves a re-download."""
+    if name not in REPOS:
+        return
+    mine, theirs = os.path.join(models_dir(), cache_name(name)), os.path.join(shared_cache(), cache_name(name))
+    if not os.path.isdir(mine) and os.path.isdir(theirs):
+        try:
+            os.replace(theirs, mine)
+        except OSError:
+            shutil.move(theirs, mine)       # another drive
+
+
 def load_model(name="large-v3-turbo", device=None):
     from faster_whisper import WhisperModel
     device = device or ("cuda" if has_cuda() else "cpu")
+    try:
+        adopt(name)
+    except OSError:
+        pass                                # then it is simply downloaded again
     return WhisperModel(name, device=device, compute_type="int8_float16" if device == "cuda" else "int8",
-                        cpu_threads=max((os.cpu_count() or 4) - 2, 4))
+                        cpu_threads=max((os.cpu_count() or 4) - 2, 4), download_root=models_dir())
 
 
 def model_for(name, mode):
