@@ -22,4 +22,4 @@ PADDLE_ENV = "production"
 [[d1_databases]]
 binding = "DB"
 database_name = "clipstudio"
-database_id = "REPLACE_AFTER_d1_create"
+database_id = "0f0b7d1d-e5a3-4048-8fd6-fe91e6726f21"
