@@ -1,2 +1,2 @@
 PRODUCT_NAME = "Clip Studio"
-VERSION = "0.4.0"
+VERSION = "0.4.1"

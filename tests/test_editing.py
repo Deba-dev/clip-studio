@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 
 import numpy as np
@@ -99,6 +100,8 @@ def loudness_of(path):
     return float(json.loads(re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", out.stderr).group(0))["input_i"])
 
 
+# The release build fetches FFmpeg after the tests run. Its smoke step then exports through the same chain.
+@pytest.mark.skipif(not shutil.which(tool("ffmpeg")), reason="needs FFmpeg")
 def test_real_export_of_a_quiet_clip_with_a_cut_reaches_phone_loudness(tmp_path):
     video = tmp_path / "v.mp4"
     make_video(video)
