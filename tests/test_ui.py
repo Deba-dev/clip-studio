@@ -58,3 +58,52 @@ def test_a_second_job_on_the_same_stream_leaves_it_alone(window):
     window.library.update_session(sid, status="analyzing")
     window.on_job_done("analyze", sid, {"busy": True})
     assert window.library.session(sid)["status"] == "analyzing"
+
+
+@pytest.mark.parametrize("status", ["analyzing", "fetching"])
+def test_an_analysis_cut_short_by_closing_is_cancelled_not_resumed(window, status):
+    """The app was closed or the PC shut down mid-analysis: the next launch must not start it again by itself."""
+    sid = window.library.add_session("s", "v.mp4")
+    window.library.update_session(sid, status=status)
+    started = []
+    window.jobs.add = lambda job, target: started.append((job, target))
+    window.recover_interrupted()
+    assert started == []
+    assert window.library.session(sid)["status"] == "stopped"
+    assert "closed" in window.library.session(sid)["error"]
+
+
+def test_closing_mid_analysis_says_why_it_stopped(window):
+    sid = window.library.add_session("s", "v.mp4")
+    window.library.update_session(sid, status="analyzing")
+    window.closing = True
+    window.on_job_done("analyze", sid, {"cancelled": True})
+    assert window.library.session(sid)["status"] == "stopped"
+    assert "closed" in window.library.session(sid)["error"]
+
+
+def test_the_pause_button_turns_into_resume(window):
+    pipe = window.streams.pipeline
+    pipe.set_paused(True)
+    assert pipe.pause_button.text() == "Resume" and pipe.paused
+    pipe.set_paused(False)
+    assert pipe.pause_button.text() == "Pause" and not pipe.paused
+
+
+def test_the_preview_scales_each_frame_once_not_on_every_repaint(window):
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage
+    phone = window.review.phone
+    phone.frame = QImage(1920, 1080, QImage.Format.Format_RGB32)
+    phone.serial += 1
+    phone.source_size = (1920, 1080)
+    phone.facecam = (1440, 0, 480, 270)
+    s = QRectF(0, 0, 270, 480)
+    phone.prepare(s)
+    tiny, cam = phone.tiny, phone.cam_image
+    assert tiny.size().width() == 48 and not cam.isNull()
+    phone.prepare(s)
+    assert phone.tiny is tiny and phone.cam_image is cam      # same frame, same size: nothing is scaled again
+    phone.serial += 1
+    phone.prepare(s)
+    assert phone.tiny is not tiny                                # a new frame is

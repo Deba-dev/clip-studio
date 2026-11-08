@@ -1,5 +1,7 @@
 """A live phone: the real video in the real 9:16 layout with the real captions, before anything is exported."""
-from PySide6.QtCore import QRectF, Qt, Signal
+import time
+
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtMultimedia import QVideoSink
 from PySide6.QtWidgets import QSizePolicy, QWidget
@@ -10,6 +12,8 @@ from .cards import cover, rounded
 from .fx import alpha, draw_icon, font, glow, tween
 
 CAM_SHARE = 680 / 1920
+FPS = 30                # the preview's own frame rate: smooth to the eye, half the work of a 60 fps stream
+SMOOTH = Qt.TransformationMode.SmoothTransformation
 
 
 class Phone(QWidget):
@@ -19,7 +23,13 @@ class Phone(QWidget):
         super().__init__()
         self.sink = QVideoSink(self)
         self.sink.videoFrameChanged.connect(self.on_frame)
-        self.frame = QImage()
+        self.frame = QImage()           # the latest frame at full size
+        self.incoming = None            # a decoded frame not converted yet: only the newest is ever converted
+        self.serial = 0
+        self.shown_at = 0.0
+        self.cache_key = None
+        self.small = self.tiny = self.cam_image = QImage()
+        self.later = QTimer(self, singleShot=True, timeout=self.update)
         self.layout_name = "auto"
         self.facecam = None
         self.source_size = None
@@ -40,10 +50,54 @@ class Phone(QWidget):
         return QSize(300, 520)
 
     def on_frame(self, frame):
-        image = frame.toImage()
+        """Only notes the frame. Converting every decoded frame of a 1080p60 stream on the UI thread was the lag:
+        now frames that arrive faster than the preview draws are skipped, and only the newest one is converted."""
+        self.incoming = frame
+        wait = self.shown_at + 1 / FPS - time.monotonic()
+        if wait <= 0:
+            self.update()
+        elif not self.later.isActive():
+            self.later.start(int(wait * 1000) + 1)
+
+    def clear(self):
+        self.incoming = None
+        self.frame = QImage()
+        self.cache_key = None
+        self.update()
+
+    def take_frame(self):
+        if self.incoming is None:
+            return
+        image = self.incoming.toImage()
+        self.incoming = None
+        self.shown_at = time.monotonic()
         if not image.isNull():
             self.frame = image
-            self.update()
+            self.serial += 1
+
+    def prepare(self, s):
+        """The frame at the size it is drawn, built once per frame instead of being scaled down on every repaint."""
+        dpr = self.devicePixelRatioF()
+        key = (self.serial, int(s.width() * dpr), int(s.height() * dpr), self.facecam, self.source_size)
+        if key == self.cache_key:
+            return
+        self.cache_key = key
+        image = self.frame
+        self.small = image          # drawn straight from the frame: a smooth pre-scale costs more than it saves
+        quarter = image.scaled(max(image.width() // 8, 48), max(image.height() // 8, 27))
+        self.tiny = quarter.scaled(48, 27, Qt.AspectRatioMode.IgnoreAspectRatio, SMOOTH)
+        self.cam_image = QImage()
+        cam = self.scaled_cam(image)
+        if cam:
+            crop = image.copy(*cam)
+            if not crop.isNull():
+                k = max(s.width() * dpr / crop.width(), s.height() * CAM_SHARE * dpr / crop.height())
+                self.cam_image = crop.scaled(int(crop.width() * k) + 1, int(crop.height() * k) + 1,
+                                             Qt.AspectRatioMode.IgnoreAspectRatio, SMOOTH) if k < .9 else crop
+
+    def showEvent(self, event):
+        self.cache_key = None
+        super().showEvent(event)
 
     def set_clip(self, words, layout, facecam):
         self.words = words
@@ -66,7 +120,8 @@ class Phone(QWidget):
 
     def set_time(self, t):
         self.time = t
-        self.update()
+        if self.paused or self.incoming is None:
+            self.update()           # while playing, the next frame repaints anyway
 
     def set_paused(self, paused):
         self.paused = paused
@@ -95,6 +150,7 @@ class Phone(QWidget):
         p.save()
         p.setClipPath(rounded(s, 18))
         p.fillRect(s, QColor(10, 7, 26))
+        self.take_frame()
         if not self.frame.isNull():
             self.draw_video(p, s)
         elif self.note:
@@ -115,22 +171,21 @@ class Phone(QWidget):
             p.setOpacity(1)
 
     def draw_video(self, p, s):
-        image = self.frame
+        self.prepare(s)
+        image = self.small
         layout = self.layout_name
-        cam = self.scaled_cam()
+        has_cam = not self.cam_image.isNull()
         if layout == "auto":
-            layout = "stack" if cam else "blur"
-        if layout == "stack" and cam:
+            layout = "stack" if has_cam else "blur"
+        if layout == "stack" and has_cam:
             top = QRectF(s.x(), s.y(), s.width(), s.height() * CAM_SHARE)
             bottom = QRectF(s.x(), top.bottom(), s.width(), s.height() - top.height())
-            source = image.copy(*cam)
-            self.fill(p, source, top)
+            self.fill(p, self.cam_image, top)
             self.fill(p, image, bottom)
         elif layout == "crop":
             self.fill(p, image, s, self.pan)
         else:
-            tiny = image.scaled(48, 27, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.fill(p, tiny, s)
+            self.fill(p, self.tiny, s)
             p.fillRect(s, QColor(0, 0, 0, 60))
             height = s.width() * image.height() / max(image.width(), 1)
             p.drawImage(QRectF(s.x(), s.center().y() - height / 2, s.width(), height), image)
@@ -141,10 +196,10 @@ class Phone(QWidget):
         w, h = rect.width() / scale, rect.height() / scale
         p.drawImage(rect, image, QRectF((image.width() - w) * (pan + 1) / 2, (image.height() - h) / 2, w, h))
 
-    def scaled_cam(self):
+    def scaled_cam(self, image):
         if not self.facecam or not self.source_size:
             return None
-        k = self.frame.width() / max(self.source_size[0], 1)
+        k = image.width() / max(self.source_size[0], 1)
         return tuple(int(v * k) for v in self.facecam)
 
     def draw_caption(self, p, s):

@@ -1,22 +1,15 @@
-Clip Studio 0.6.0 turns every moment into a clip, adds styled captions you can fully customise, and fixes English captions that came out blank or garbled.
+Clip Studio 0.6.1 makes the review preview smooth, lets you pause an analysis, and stops an analysis cleanly when you close the app.
 
 ## New in this version
 
-- **Every moment becomes a clip:** up to 150 per stream instead of 12. The best clips are captioned first so you can start reviewing; the rest are captioned in the background, and an export never waits for them.
-- **Pins on the stream map:** every clip is marked on the activity map in its colour (kill, death, funny, hype). Hover to see what it is, click to open it.
-- **Styled captions:** ten looks (Classic, Pop, Box, Karaoke, One word, Comic, Neon, Fire, Minimal, Marker), and you can change everything: font, colours, outline, shadow, background box, highlight (colour, box behind the word, karaoke fill), animation (pop, bounce, fade, slide), tilt and spacing. "Use on all clips" sets one look for the whole stream. The phone preview matches the export.
-- **Better English captions:** captions translated to English no longer come out blank, and a line Whisper repeats over and over is cut.
-- **Clip your recent streams:** type your YouTube channel (or a Twitch or Kick channel link) once, tick finished streams, and they download and get clipped one after another.
-- **Virality score:** each clip gets a 0 to 99 score for what tends to travel on Shorts: a hook in the first seconds, a reaction you can hear, a kill or a laugh, and a good length. Sort by "Most likely to go viral".
-- **Title ideas and hashtags:** three title ideas and a set of hashtags for each clip, one click to copy, and a ready-to-paste text file next to every export.
-- **Compilations:** join the clips you kept into one video. Filter to Kills first for a kills montage.
-- **Premium is coming:** Settings has a new Premium section. Until payments open, every feature stays free.
-
-Streams analysed by an older version keep their clips. Choose **Analyze again** on a stream to get every moment and the new captions.
+- **Smooth preview:** the review desk no longer stutters while a clip plays. The activity map under the player was being redrawn many times a second (about 60 ms each time on a long stream); it is now drawn once, and playback only moves the playhead. The trim bar and the phone preview got the same treatment.
+- **Pause and Resume:** the progress panel on the Streams page has a Pause button next to Stop. Pausing frees your PC straight away (speech recognition and FFmpeg included), and Resume carries on from exactly where it stopped.
+- **Closing the app stops the analysis:** if you close Clip Studio, or the PC shuts down, during an analysis, it is cancelled instead of starting again by itself on the next launch. The stream shows *Stopped*; choose **Analyze again** from its card menu when you want it.
+- **Nothing keeps running in the background:** if the app is closed in any way, including a crash or End task, the analysis and any FFmpeg it started end with it.
 
 ## Install
 
-1. Download `ClipStudio-Setup.exe` below and run it.
+1. Download `ClipStudio-Setup.exe` below and run it. It updates an existing install and keeps your streams and clips.
 2. Windows may show "Windows protected your PC" because the app is not signed yet. Click **More info**, then **Run anyway**.
 
 You need Windows 10 or 11. The first analysis downloads about 1.8 GB of models. Past streams are large, so a 2-hour stream can need around 15 GB of free space while it downloads.
@@ -29,3 +22,4 @@ You need Windows 10 or 11. The first analysis downloads about 1.8 GB of models. 
 - The virality score is a guide for what to post first, not a promise about views.
 - Without a set-up NVIDIA graphics card, captions take about 15 minutes for every 2.5 hours of stream.
 - Twitch and Kick links have not been tested on real streams yet.
+- Background captions for a stream that already finished analysing still carry on after a restart.

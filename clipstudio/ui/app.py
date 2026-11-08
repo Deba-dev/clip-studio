@@ -31,6 +31,8 @@ VK_F9 = 0x78
 WM_HOTKEY = 0x0312
 VIDEO_FILTER = "Recordings (*.mp4 *.mkv *.mov *.flv *.ts *.webm)"
 STEPS = (("Download", "down"), ("Listen", "wave"), ("Rank", "spark"), ("Caption", "caption"), ("Preview", "film"))
+STOPPED_ON_CLOSE = "Stopped because Clip Studio was closed. Use the card menu to analyze it again."
+STOPPED = "Stopped. Use the card menu to analyze it again."
 STAGE_STEP = {"Downloading": 0, "Getting chat replay": 0, "Reading audio": 1, "Finding moments": 2,
               "Loading speech model": 3, "Writing captions": 3, "Making previews": 4, "Done": 4}
 
@@ -288,6 +290,7 @@ class UpdateBanner(QWidget):
 class Pipeline(QWidget):
     """Shows exactly where a stream is in the process, so waiting never feels like a hung app."""
     cancel = Signal()
+    pause = Signal(bool)        # True to pause, False to resume
     HEIGHT = 112
 
     def __init__(self):
@@ -303,16 +306,31 @@ class Pipeline(QWidget):
         self.button = Button("Stop", "x", flat=True)
         self.button.setParent(self)
         self.button.clicked.connect(self.cancel)
+        self.paused = False
+        self.pause_button = Button("Pause", "pause", flat=True)
+        self.pause_button.setParent(self)
+        self.pause_button.setToolTip("Frees your PC for now. Resume carries on from exactly here.\n"
+                                     "Closing Clip Studio stops the analysis instead; it does not resume later.")
+        self.pause_button.clicked.connect(lambda: self.pause.emit(not self.paused))
         self.timer = QTimer(self, interval=40, timeout=self.beat)
         self.timer.start()
 
     def beat(self):
-        if self.t > .5 and MOTION.on:
+        if self.t > .5 and MOTION.on and not self.paused:
             self.pulse = (self.pulse + .025) % 1
             self.update()
 
     def resizeEvent(self, event):
         self.button.setGeometry(self.width() - 100, 14, 86, 44)
+        self.pause_button.setGeometry(self.width() - 210, 14, 106, 44)
+
+    def set_paused(self, paused, allowed=True):
+        self.paused = paused
+        self.pause_button.setVisible(allowed)
+        self.pause_button.setText("Resume" if paused else "Pause")
+        self.pause_button.icon_name = "play" if paused else "pause"
+        self.pause_button.update()
+        self.update()
 
     def open(self, title):
         self.title = title
@@ -345,7 +363,7 @@ class Pipeline(QWidget):
         p.drawText(QRectF(r.x() + 18, r.y() + 8, r.width() * .55, 22), Qt.AlignmentFlag.AlignVCenter, title)
         p.setPen(T.MUTE)
         p.setFont(font(12))
-        line = self.stage + ("  ·  " + self.note if self.note else "")
+        line = ("Paused  ·  " if self.paused else "") + self.stage + ("  ·  " + self.note if self.note else "")
         p.drawText(QRectF(r.x() + 18, r.y() + 30, r.width() * .6, 20), Qt.AlignmentFlag.AlignVCenter, line)
         left, right = r.x() + 34, r.right() - 34
         y = r.bottom() - 30
@@ -867,6 +885,7 @@ class MainWindow(QMainWindow):
         self.settings = settings or Settings()
         MOTION.set(reduced=bool(self.settings.get("reduce_motion")))
         self.jobs = Jobs(self.library.path)
+        self.closing = False
         self.jobs.progress.connect(self.on_progress)
         self.jobs.finished.connect(self.on_job_done)
         self.jobs.idle.connect(lambda: self.streams.pipeline.close_panel())
@@ -902,6 +921,9 @@ class MainWindow(QMainWindow):
         self.stack = Pages()
         self.streams = StreamsPage(self)
         self.streams.pipeline.cancel.connect(self.cancel_job)
+        self.streams.pipeline.pause.connect(self.pause_job)
+        self.streams.pipeline.set_paused(False, self.jobs.can_pause())
+        self.jobs.finished.connect(lambda *_: self.streams.pipeline.set_paused(False, self.jobs.can_pause()))
         self.streams.banner.update_now.connect(self.start_update)
         self.review = ReviewPage(self.library, self.settings)
         self.review.back.connect(lambda: self.goto(0))
@@ -966,10 +988,11 @@ class MainWindow(QMainWindow):
         Toast(self.centralWidget(), text, kind)
 
     def recover_interrupted(self):
-        """A session left mid-job means the app or PC went down, so the job simply runs again."""
+        """A session left mid-job means the app was closed or the PC went down. That job is cancelled, not re-run:
+        starting heavy work by itself on the next launch is a surprise. The card offers to analyze it again."""
         for s in self.library.sessions():
             if s["status"] in ("analyzing", "fetching"):
-                self.analyze(s["id"])
+                self.library.update_session(s["id"], status="stopped", error=STOPPED_ON_CLOSE)
             elif s["status"] == "ready" and self.library.uncaptioned(s["id"]):
                 self.jobs.add("captions", s["id"])      # background captions carry on where they stopped
 
@@ -1112,6 +1135,8 @@ class MainWindow(QMainWindow):
         if blocked:
             self.upgrade(blocked)
             return
+        if self.jobs.paused and self.jobs.current and self.jobs.current[0] != "captions":
+            self.toast("The export starts after the paused job. Press Resume on the Streams page.", "info")
         self.jobs.add("export", cid)
 
     def analyze(self, sid):
@@ -1157,6 +1182,16 @@ class MainWindow(QMainWindow):
     def cancel_job(self):
         self.jobs.cancel()
 
+    def pause_job(self, on):
+        if not self.jobs.busy():
+            return
+        paused = self.jobs.pause(on)
+        self.streams.pipeline.set_paused(paused, self.jobs.can_pause())
+        if on and not paused:
+            self.toast("This job could not be paused", "bad")
+        elif paused:
+            self.toast("Paused. Your PC is free until you press Resume.", "info")
+
     def on_job_done(self, job, target, result):
         if job == "export":
             self.review.export_progress(target, 0)
@@ -1183,7 +1218,8 @@ class MainWindow(QMainWindow):
             self.toast("This stream is already being processed", "info")
         else:
             if "cancelled" in result:
-                self.library.update_session(target, status="stopped", error="Stopped. Use the card menu to continue.")
+                self.library.update_session(target, status="stopped",
+                                            error=STOPPED_ON_CLOSE if self.closing else STOPPED)
             elif "error" in result:
                 self.library.update_session(target, status="failed", error=result["error"][:200])
                 if result.get("upgrade") and result["upgrade"] != "too_long":
@@ -1204,6 +1240,7 @@ class MainWindow(QMainWindow):
             self.review.reload()
 
     def closeEvent(self, event):
+        self.closing = True                 # an analysis running now is cancelled, and never resumed on next launch
         self.review.save_words()
         self.review.player.stop()
         self.logger.stop()

@@ -4,7 +4,7 @@ import tempfile
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QImage, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QPainter, QShortcut
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QMessageBox, QPlainTextEdit, QScrollArea, QSlider, QSplitter, QStackedWidget,
@@ -706,7 +706,7 @@ class ReviewPage(QWidget):
             self.size_info = None
         self.phone.source_size = (self.size_info["width"], self.size_info["height"]) if self.size_info else None
         split = source.endswith(".ffconcat")
-        self.phone.frame = QImage()
+        self.phone.clear()
         self.phone.note = "Preview is not available yet for recordings OBS split into parts. Exports still work." if split else ""
         self.fresh = not split
         self.player.setSource(QUrl() if split else QUrl.fromLocalFile(source))

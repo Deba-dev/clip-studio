@@ -222,6 +222,14 @@ class Aurora(QWidget):
 
     def paintEvent(self, event):
         w, h = max(self.width() // 8, 8), max(self.height() // 8, 8)
+        key = (w, h, self.phase, T.BG.rgb())
+        if getattr(self, "cached", (None,))[0] != key:
+            self.cached = (key, self.render(w, h))      # behind a playing video this repaints every frame
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.drawImage(self.rect(), self.cached[1])
+
+    def render(self, w, h):
         image = QImage(w, h, QImage.Format.Format_RGB32)
         image.fill(T.BG)
         q = QPainter(image)
@@ -237,9 +245,7 @@ class Aurora(QWidget):
             q.setBrush(QBrush(g))
             q.drawRect(0, 0, w, h)
         q.end()
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.drawImage(self.rect(), image)
+        return image
 
 
 class Pages(QStackedWidget):

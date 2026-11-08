@@ -1,7 +1,7 @@
 """Two views of time: the whole stream at a glance, and a close-up for trimming with handles that snap to words."""
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from .. import edit as clip_edit
@@ -50,15 +50,23 @@ class StreamMap(QWidget):
         self.events = list(events)
         self.duration = max(duration, 1.0)
         self.clips = clips
+        self.cached_bins = None
         self.update()
+
+    def resizeEvent(self, event):
+        self.cached_bins = None
+        super().resizeEvent(event)
 
     def set_active(self, cid):
         self.active = cid
         self.update()
 
     def set_play(self, t):
+        """A whole stream is a few pixels per minute: repaint only when the playhead actually moves a pixel."""
+        moved = int(self.x_of(t)) != int(self.x_of(self.play))
         self.play = t
-        self.update()
+        if moved:
+            self.update()
 
     def area(self):
         return QRectF(14, 46, self.width() - 28, self.height() - 66)
@@ -77,6 +85,11 @@ class StreamMap(QWidget):
         return max(0.0, min((x - a.x()) / max(a.width(), 1) * self.duration, self.duration))
 
     def bins(self):
+        if getattr(self, "cached_bins", None) is None:
+            self.cached_bins = self.make_bins()
+        return self.cached_bins
+
+    def make_bins(self):
         count = max(int(self.area().width() // (BAR + GAP)), 1)
         edges = np.linspace(0, self.curve.size, count + 1).astype(int)
         top = float(np.percentile(self.curve, 99.5)) or 1.0
@@ -100,8 +113,26 @@ class StreamMap(QWidget):
             self.picked.emit(self.time_at(pos.x()))
 
     def paintEvent(self, event):
+        """The map itself is drawn once into a picture (a long stream takes ~60 ms to draw). Playback only moves the
+        playhead line over that picture; it is redrawn when the clips, the selection or the size change."""
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), dpr, self.active, id(self.clips), len(self.clips), id(self.curve))
+        if getattr(self, "layer_key", None) != key:
+            self.layer_key = key
+            self.layer = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+            self.layer.setDevicePixelRatio(dpr)
+            self.layer.fill(Qt.GlobalColor.transparent)
+            q = QPainter(self.layer)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.paint_map(q)
+            q.end()
         p = QPainter(self)
+        p.drawPixmap(0, 0, self.layer)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setFont(font(11, QFont.Weight.DemiBold))
+        self.paint_live(p, self.area())
+
+    def paint_map(self, p):
         panel(p, QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 12)
         p.setFont(font(11, QFont.Weight.DemiBold))
         p.setPen(T.MUTE)
@@ -122,6 +153,8 @@ class StreamMap(QWidget):
             p.drawRoundedRect(QRectF(a.x() + i * (BAR + GAP), a.bottom() - height, BAR, height), 1.5, 1.5)
         self.paint_pins(p, a)
         self.paint_clip_pins(p, a)
+
+    def paint_live(self, p, a):
         x = self.x_of(self.play)
         p.setPen(QPen(T.TEXT, 2))
         p.drawLine(QPointF(x, a.y() - 3), QPointF(x, a.bottom() + 2))
@@ -243,8 +276,17 @@ class TrimBar(QWidget):
         self.update()
 
     def set_play(self, t):
+        moved = not (self.lo <= t <= self.hi and self.lo <= self.play <= self.hi) or \
+            int(self.x_of(t) * 2) != int(self.x_of(self.play) * 2)
         self.play = t
-        self.update()
+        if moved:
+            self.update()
+
+    def floor(self):
+        """The quiet level of the whole stream, worked out once per stream rather than on every repaint."""
+        if getattr(self, "floor_of", (None,))[0] is not self.loud:
+            self.floor_of = (self.loud, float(np.percentile(self.loud[::max(self.loud.size // 2000, 1)], 10)))
+        return self.floor_of[1]
 
     def set_marks(self, mark_in, mark_out):
         self.mark_in, self.mark_out = mark_in, mark_out
@@ -319,8 +361,29 @@ class TrimBar(QWidget):
         self.drag = None
 
     def paintEvent(self, event):
+        """Like the stream map: the bar is a cached picture and playback only draws the playhead over it."""
+        dpr = self.devicePixelRatioF()
+        key = (self.width(), self.height(), dpr, self.start, self.end, self.lo, self.hi, self.drag, self.mark_in,
+               self.mark_out, tuple(map(tuple, self.cuts)), tuple(map(tuple, self.mutes)), id(self.words),
+               id(self.loud), id(self.pins))
+        if getattr(self, "layer_key", None) != key:
+            self.layer_key = key
+            self.layer = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+            self.layer.setDevicePixelRatio(dpr)
+            self.layer.fill(Qt.GlobalColor.transparent)
+            q = QPainter(self.layer)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            self.paint_bar(q)
+            q.end()
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.drawPixmap(0, 0, self.layer)
+        if self.lo <= self.play <= self.hi:
+            a = self.area()
+            x = self.x_of(self.play)
+            p.setPen(QPen(T.CAPTION, 2))
+            p.drawLine(QPointF(x, a.y() - 5), QPointF(x, a.bottom() + 5))
+
+    def paint_bar(self, p):
         panel(p, QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 12)
         a = self.area()
         p.setFont(font(11, QFont.Weight.DemiBold))
@@ -335,7 +398,7 @@ class TrimBar(QWidget):
         lo, hi = int(self.lo), int(np.ceil(self.hi))
         part = self.loud[lo:hi].astype(np.float32)
         if part.size:
-            floor = float(np.percentile(self.loud[::max(self.loud.size // 2000, 1)], 10))
+            floor = self.floor()
             top = max(float(part.max()), floor + 1)
             levels = np.clip((part - floor) / (top - floor), .04, 1)
             step = a.width() / max(self.hi - self.lo, .1)
@@ -361,10 +424,6 @@ class TrimBar(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(T.CAPTION if self.drag == name else T.TEXT)
             p.drawRoundedRect(QRectF(x - 4, a.y() - 5, 8, a.height() + 10), 4, 4)
-        if self.lo <= self.play <= self.hi:
-            x = self.x_of(self.play)
-            p.setPen(QPen(T.CAPTION, 2))
-            p.drawLine(QPointF(x, a.y() - 5), QPointF(x, a.bottom() + 5))
 
     def paint_ranges(self, p, a):
         """Cuts are hatched out, muted parts show a band, marks show what the next cut would take."""

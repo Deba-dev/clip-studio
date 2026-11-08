@@ -360,3 +360,38 @@ def test_one_job_per_stream(tmp_path, monkeypatch):
     assert worker.hold_session(8)
     first.close()
     assert worker.hold_session(7)
+
+
+def test_a_paused_job_tree_is_frozen_and_stop_ends_all_of_it(tmp_path):
+    """Pause must freeze the worker and what it started (FFmpeg), and Stop must end both even while paused."""
+    import subprocess
+    import sys
+    import time
+    from clipstudio.ui.jobs import ProcessGroup
+    group = ProcessGroup()
+    if not group.can_pause():
+        pytest.skip("pausing needs Windows")
+    out = tmp_path / "ticks.txt"
+    child = "import sys,time\nwhile 1:\n    open(sys.argv[1],'a').write('c')\n    time.sleep(.05)\n"
+    parent = ("import subprocess,sys,time\nsubprocess.Popen([sys.executable,'-c',%r,sys.argv[1]])\n"
+              "while 1:\n    open(sys.argv[1],'a').write('p')\n    time.sleep(.05)\n") % child
+    proc = subprocess.Popen([sys.executable, "-c", parent, str(out)])
+    group.add(proc.pid)
+    try:
+        for _ in range(100):
+            if out.exists() and "c" in out.read_text():
+                break
+            time.sleep(.05)
+        assert group.pause(True)
+        time.sleep(.3)
+        before = out.read_text()
+        time.sleep(.6)
+        assert out.read_text() == before
+        assert group.pause(False)
+        time.sleep(.4)
+        assert len(out.read_text()) > len(before)
+        group.pause(True)
+    finally:
+        group.kill()
+    proc.wait(5)
+    assert group.pids() == []
