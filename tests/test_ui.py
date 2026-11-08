@@ -107,3 +107,127 @@ def test_the_preview_scales_each_frame_once_not_on_every_repaint(window):
     phone.serial += 1
     phone.prepare(s)
     assert phone.tiny is not tiny                                # a new frame is
+
+
+def test_review_shows_zooms_hook_and_search(window):
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter
+    sid = window.library.add_session("s", "missing.mp4")
+    window.library.update_session(sid, status="ready")
+    words = [{"w": "अरे", "s": 3.0, "e": 3.3}, {"w": "भाई", "s": 3.4, "e": 3.8}]
+    window.library.replace_clips(sid, [
+        {"start": 0.0, "end": 10.0, "peak": 4.0, "score": 5.0, "reasons": ["r"], "title": "Double kill",
+         "words": words, "events": [{"t": 4.0, "kind": "kill"}, {"t": 5.0, "kind": "kill"}, {"t": 6.0, "kind": "laugh"}]},
+        {"start": 20.0, "end": 30.0, "peak": 24.0, "score": 4.0, "reasons": ["r"], "title": "Quiet", "words": []}])
+    review = window.review
+    review.open(sid)
+    review.select(0)
+    assert "2 kills" in review.zoom_note.text() and review.zoom.isChecked()
+    assert list(review.phone.zooms) == ["game"]             # no webcam marked, so the laugh does not zoom
+
+    review.hook_box.setText("Bhai ye kya tha")
+    review.hook_done()
+    first = review.clip["id"]
+    assert window.library.clip(first)["edit"]["hook"] == "Bhai ye kya tha"
+    assert review.phone.hook == ["Bhai ye kya tha"]
+    review.hook_box.setText("typed but not saved")
+    review.select(1)                                         # leaving a clip keeps what was typed, on that clip
+    assert window.library.clip(first)["edit"]["hook"] == "typed but not saved"
+    assert review.hook_box.text() == "" and review.clip["id"] != first
+
+    review.zoom.setChecked(False)
+    assert window.library.clip(review.clip["id"])["edit"]["zoom"] is False
+
+    review.search.setText("bhai")
+    assert [c.isVisibleTo(review) for c in review.cards] == [True, False]
+    review.search.setText("")
+    assert all(c.isVisibleTo(review) for c in review.cards)
+
+    review.select(0)
+    phone = review.phone
+    phone.frame = QImage(1920, 1080, QImage.Format.Format_RGB32)
+    phone.serial += 1
+    phone.source_size = (1920, 1080)
+    image = QImage(270, 480, QImage.Format.Format_ARGB32)
+    for layout in ("blur", "crop", "stack"):
+        phone.layout_name = layout
+        phone.facecam = (1440, 0, 480, 270) if layout == "stack" else None
+        phone.zooms = {"game": [(3.0, 5.0)], "cam": [(3.0, 5.0)]}
+        phone.set_time(4.0, 1.0)                              # zoomed, and inside the hook's seconds
+        p = QPainter(image)
+        phone.draw_video(p, QRectF(0, 0, 270, 480))
+        phone.draw_hook(p, QRectF(0, 0, 270, 480))
+        p.end()
+
+
+def test_review_picks_a_game_and_teaches_kills(window, tmp_path):
+    from clipstudio import teach
+    sid = window.library.add_session("BGMI rush", "missing.mp4")
+    window.library.update_session(sid, status="ready", report='{"reader": "", "why": "Top bar not found", '
+                                                              '"layout": "vertical"}')
+    window.library.replace_clips(sid, [{"start": 0.0, "end": 10.0, "peak": 4.0, "score": 5.0, "reasons": ["r"],
+                                        "events": [{"t": 3.0, "kind": "kill"}, {"t": 5.0, "kind": "kill"}]}])
+    review = window.review
+    review.open(sid)
+    assert "Top bar not found" in review.reader_line.text() and "vertical" in review.reader_line.text()
+    assert not review.find_button.isEnabled()                       # no game chosen yet
+    review.game_box.setCurrentIndex(review.game_box.findData("bgmi"))
+    assert window.library.session(sid)["game"] == "BGMI"
+    review.mark_kill()
+    review.player.position = lambda: 9000
+    review.mark_kill()
+    assert len(teach.examples("bgmi")) == 2 and review.find_button.isEnabled()
+    asked = []
+    review.find_kills.connect(asked.append)
+    review.find_every_kill()
+    assert asked == [sid]
+    assert [label for _, label in review.phone.tally] == ["KILL", "DOUBLE KILL"]
+
+
+def test_settings_wait_in_the_save_bar_until_saved(window):
+    page = window.settings_page
+    assert not page.dirty() and page.bar.shown == 0
+    page.game.set("bgmi")
+    page.game.changed.emit("bgmi")
+    page.length.setValue(30)
+    assert page.dirty()
+    page.discard()
+    assert not page.dirty() and page.game.value() == "" and page.length.value() == 45
+    page.game.set("valorant")
+    page.game.changed.emit("valorant")
+    page.save()
+    assert window.settings.get("game") == "valorant" and not page.dirty()
+
+
+def test_settings_search_and_side_menu(window):
+    page = window.settings_page
+    page.search.setText("webSocket")
+    shown = [c.title for c in page.cards if not c.isHidden()]
+    assert shown == ["OBS and live chat"]
+    assert page.nav.hidden == {i for i, c in enumerate(page.cards) if c.title != "OBS and live chat"}
+    page.search.setText("zzzz nothing")
+    assert not page.nothing.isHidden()
+    page.search.setText("")
+    assert all(not c.isHidden() for c in page.cards)
+    page.jump(3)
+    assert page.nav.index == 3
+
+
+def test_buttons_spin_while_busy_and_confirm_when_done(window):
+    from clipstudio.ui.fx import Button
+    b = Button("Save", "check", primary=True)
+    clicked = []
+    b.clicked.connect(lambda: clicked.append(1))
+    b.set_busy(True)
+    b.click()                       # a programmatic click still works; mouse clicks are what busy blocks
+    assert b.busy
+    b.done("Saved", 10)
+    assert not b.busy and b.text() == "Saved" and b.icon_name == "check"
+    b.undone()
+    assert b.text() == "Save" and b.icon_name == "check"
+    assert level_words() == ["Never", "Less", "Normal", "More", "Most"]
+
+
+def level_words():
+    from clipstudio.ui.settings_page import level_text
+    return [level_text(v) for v in (0, 50, 100, 150, 200)]

@@ -7,13 +7,13 @@ import sys
 from PySide6.QtCore import QAbstractNativeEventFilter, QEasingCurve, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPen
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QSlider,
-                               QLineEdit, QMainWindow, QMenu, QMessageBox, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                               QMenu, QMessageBox, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import chat, cleanup, fetch
 from ..db import Library
 from ..obs import ObsClient, RecordingTracker
-from ..paths import exports_dir, session_thumb, tool
+from ..paths import session_thumb, tool
 from ..settings import Settings
 from ..updater import Updater
 from ..version import PRODUCT_NAME, VERSION
@@ -22,9 +22,10 @@ from .cards import WORKING, StreamCard, clock
 from .fx import (MOTION, Aurora, Button, Confetti, Pages, Toast, Toggle, alpha, draw_icon, draw_ring, font, glow, mix,
                  panel, tween)
 from .jobs import Jobs
-from .premium import AccountHub, PremiumSection, UpgradeDialog
+from .premium import AccountHub, UpgradeDialog
 from .recent import RecentDialog
 from .review import ReviewPage
+from .settings_page import FolderRow, SettingsPage
 
 HOTKEY_ID = 7301
 VK_F9 = 0x78
@@ -394,45 +395,6 @@ class Pipeline(QWidget):
             p.drawText(QRectF(c.x() - 40, c.y() + 12, 80, 18), Qt.AlignmentFlag.AlignCenter, label)
 
 
-class FolderRow(QWidget):
-    """Shows a folder with a Choose button. An empty value means the app's automatic choice."""
-    changed = Signal(str)
-
-    def __init__(self, title, empty_text, can_reset=True):
-        super().__init__()
-        self.title, self.empty_text = title, empty_text
-        self.path = ""
-        self.text = QLineEdit(readOnly=True, placeholderText=empty_text)
-        self.text.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        pick = Button("Choose", "folder")
-        pick.clicked.connect(self.pick)
-        self.reset = Button("Automatic", flat=True)
-        self.reset.clicked.connect(lambda: self.set(""))
-        self.reset.setVisible(False)
-        self.can_reset = can_reset
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(2)
-        row.addWidget(self.text, 1)
-        row.addWidget(pick)
-        row.addWidget(self.reset)
-
-    def pick(self):
-        start = self.path or os.path.expanduser("~")
-        path = QFileDialog.getExistingDirectory(self, self.title, start)
-        if path:
-            self.set(os.path.normpath(path))
-
-    def load(self, path):
-        self.path = path
-        self.text.setText(path)
-        self.reset.setVisible(bool(path) and self.can_reset)
-
-    def set(self, path):
-        self.load(path)
-        self.changed.emit(path)
-
-
 class LinkSheet(QWidget):
     """Slides up over a dimmed window to take a past stream's link."""
     submitted = Signal(str, str)
@@ -671,211 +633,6 @@ class StreamsPage(QWidget):
             self.refresh()
 
 
-class Section(QWidget):
-    def __init__(self, title):
-        super().__init__()
-        self.form = QFormLayout()
-        self.form.setSpacing(9)
-        self.form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
-        head = QLabel(title)
-        head.setObjectName("h2")
-        col = QVBoxLayout(self)
-        col.setContentsMargins(20, 14, 20, 16)
-        col.addWidget(head)
-        col.addLayout(self.form)
-        col.addStretch()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        panel(p, QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 14)
-
-
-def choose(box, value, fallback=0):
-    found = box.findData(value)
-    box.setCurrentIndex(found if found >= 0 else fallback)
-
-
-class SettingsPage(QWidget):
-    def __init__(self, window):
-        super().__init__()
-        self.w = window
-        s = window.settings
-        title = QLabel("Settings")
-        title.setObjectName("h1")
-        self.host = QLineEdit(s.get("obs_host"))
-        self.port = QSpinBox(maximum=65535, value=int(s.get("obs_port")))
-        self.password = QLineEdit(s.get("obs_password"), echoMode=QLineEdit.EchoMode.Password)
-        self.twitch = QLineEdit(s.get("twitch_channel"), placeholderText="your channel name")
-        self.kick = QLineEdit(s.get("kick_channel"), placeholderText="your channel name or chatroom ID")
-        self.youtube = QLineEdit(s.get("youtube_video"), placeholderText="this stream's live link")
-        self.model = QComboBox()
-        for label, value in (("Best (1.6 GB download)", "large-v3-turbo"), ("Balanced (medium)", "medium"),
-                             ("Fast (small, weak on Hinglish)", "small")):
-            self.model.addItem(label, value)
-        self.model.setCurrentIndex(max(self.model.findData(s.get("model")), 0))
-        self.language = QComboBox()
-        for label, value in (("Detect by itself", ""), ("Hindi / Hinglish", "hi"), ("English", "en"),
-                             ("Bengali", "bn"), ("Assamese", "as"), ("Tamil", "ta"), ("Telugu", "te"),
-                             ("Marathi", "mr")):
-            self.language.addItem(label, value)
-        self.language.setCurrentIndex(max(self.language.findData(s.get("language")), 0))
-        self.language.setToolTip("Mixed streams caption best when you pick the main language here")
-        self.caption_mode = QComboBox()
-        self.caption_mode.addItem("Same language as spoken", "spoken")
-        self.caption_mode.addItem("Translate to English", "english")
-        self.caption_mode.setCurrentIndex(max(self.caption_mode.findData(s.get("caption_mode")), 0))
-        self.caption_mode.setToolTip("Translation uses the medium speech model, a separate download")
-        self.wants = {}
-        for key in ("funny", "kills", "deaths", "hype"):
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(0, 200)
-            slider.setSingleStep(25)
-            slider.setValue(int(s.get("want_" + key)))
-            self.wants[key] = slider
-        self.roman = Toggle("Write Hindi captions in Roman letters (bhai, kya)", bool(s.get("roman_script")))
-        self.clips = QSpinBox(minimum=1, maximum=40, value=int(s.get("max_clips")))
-        self.clips.setToolTip("Every moment found becomes a clip. This many get captions right away, so you can start "
-                              "reviewing sooner; the rest are captioned in the background.")
-        self.length = QSpinBox(minimum=15, maximum=59, value=int(s.get("clip_length")), suffix=" s")
-        self.size = QComboBox()
-        for label, value in (("720 x 1280 (smaller files)", "720"), ("1080 x 1920 (standard)", "1080"),
-                             ("1440 x 2560 (sharpest after upload)", "1440")):
-            self.size.addItem(label, value)
-        choose(self.size, str(s.get("export_size")), 1)
-        self.size.setToolTip("YouTube gives 1440p uploads a better encode, so they stay sharper on phones. "
-                             "Higher sizes take longer to export.")
-        self.fps = QComboBox()
-        for label, value in (("Match the stream (up to 60)", "source"), ("60 fps", "60"),
-                             ("30 fps (faster export)", "30"), ("24 fps", "24")):
-            self.fps.addItem(label, value)
-        self.fps.setCurrentIndex(max(self.fps.findData(str(s.get("export_fps"))), 0))
-        self.fps.setToolTip("A clip never gets more frames than its stream has")
-        self.enhance = QComboBox()
-        for label, value in (("Leave it as it is", "off"), ("Clean up and sharpen (fast)", "auto"),
-                             ("AI upscale (best, a few minutes per clip)", "ai")):
-            self.enhance.addItem(label, value)
-        choose(self.enhance, s.get("enhance"), 1)
-        self.enhance.setToolTip("Clean up smooths compression blocks below 720p and sharpens any picture that is "
-                                "enlarged for the phone screen.\nAI upscale redraws streams below 1080p at 2-4x with "
-                                "Real-ESRGAN on your graphics card. It needs a one-time 45 MB download and Vulkan. "
-                                "Good streams use the fast clean up instead.")
-        self.motion = Toggle("Reduce motion", bool(s.get("reduce_motion")))
-        self.motion.setToolTip("Animations already pause by themselves while OBS records or streams")
-        obs = Section("OBS")
-        obs.form.addRow("Address", self.host)
-        obs.form.addRow("Port", self.port)
-        obs.form.addRow("WebSocket password", self.password)
-        live = Section("Live chat")
-        live.form.addRow("Twitch", self.twitch)
-        live.form.addRow("Kick", self.kick)
-        live.form.addRow("YouTube", self.youtube)
-        clips = Section("Clips")
-        clips.form.addRow("Caption quality", self.model)
-        clips.form.addRow("Stream language", self.language)
-        clips.form.addRow("Captions", self.caption_mode)
-        clips.form.addRow("", self.roman)
-        clips.form.addRow("Captioned right away", self.clips)
-        clips.form.addRow("Usual clip length", self.length)
-        export = Section("Export")
-        export.form.addRow("Resolution", self.size)
-        export.form.addRow("Frame rate", self.fps)
-        export.form.addRow("Low-quality video", self.enhance)
-        want = Section("What to look for")
-        for key, label in (("funny", "Funny moments (laughter)"), ("kills", "Kills and clutches"),
-                           ("deaths", "Deaths you react to"), ("hype", "Loud or busy-chat moments")):
-            want.form.addRow(label, self.wants[key])
-        want.form.addRow("", QLabel("Left is never, the middle is normal, right is more. Used on the next analysis."))
-        premium = Section("Premium")
-        self.premium = PremiumSection(window.hub)
-        self.premium.upgrade.connect(lambda: self.w.upgrade())
-        premium.form.addRow(self.premium)
-        look = Section("Look and updates")
-        look.form.addRow("", self.motion)
-        self.check = Button("Check for updates", "down")
-        self.check.clicked.connect(lambda: self.w.updater.check(manual=True))
-        look.form.addRow("Version " + VERSION, self.check)
-        self.downloads = FolderRow("Save past streams to", "Automatic: a drive with enough space")
-        self.downloads.load(s.get("downloads_folder"))
-        self.downloads.changed.connect(lambda path: self.folder_changed("downloads_folder", path))
-        self.exports = FolderRow("Save clips to", exports_dir())
-        self.exports.load(s.get("exports_folder"))
-        self.exports.changed.connect(lambda path: self.folder_changed("exports_folder", path))
-        folders = Section("Folders")
-        folders.form.addRow("Past stream downloads", self.downloads)
-        folders.form.addRow("Exported clips", self.exports)
-        save = Button("Save", "check", primary=True)
-        save.clicked.connect(self.save)
-        grid = QGridLayout()
-        grid.setSpacing(12)
-        grid.addWidget(obs, 0, 0)
-        grid.addWidget(live, 1, 0)
-        grid.addWidget(clips, 0, 1)
-        grid.addWidget(look, 1, 1)
-        grid.addWidget(premium, 2, 0, 1, 2)
-        grid.addWidget(export, 3, 0, 1, 2)
-        grid.addWidget(want, 4, 0, 1, 2)
-        grid.addWidget(folders, 5, 0, 1, 2)
-        body = QWidget()
-        col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, 8, 0)
-        col.setSpacing(10)
-        col.addLayout(grid)
-        col.addWidget(save, 0, Qt.AlignmentFlag.AlignLeft)
-        col.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidget(body)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        page = QVBoxLayout(self)
-        page.setContentsMargins(24, 20, 24, 14)
-        page.addWidget(title)
-        page.addWidget(scroll, 1)
-
-    def folder_changed(self, key, path):
-        self.w.settings.set(key, path)
-        self.w.toast("Folder saved" if path else "Back to automatic")
-
-    def premium_choices(self):
-        """Premium-only choices fall back to their free versions, with one upgrade prompt naming the first."""
-        gate, blocked = self.w.gate, None
-        for feature, box, free in (("english", self.caption_mode, "spoken"), ("1440", self.size, "1080"),
-                                   ("60fps", self.fps, "30"), ("upscale", self.enhance, "auto")):
-            chosen = box.currentData()
-            premium_pick = {"english": chosen == "english", "1440": chosen == "1440",
-                            "60fps": chosen in ("60", "source"), "upscale": chosen == "ai"}[feature]
-            if premium_pick and not gate.allowed(feature):
-                box.setCurrentIndex(max(box.findData(free), 0))
-                blocked = blocked or feature
-        changed = any(v.value() != int(self.w.settings.get("want_" + k)) for k, v in self.wants.items())
-        if changed and not gate.allowed("weights"):
-            for k, v in self.wants.items():
-                v.setValue(int(self.w.settings.get("want_" + k)))
-            blocked = blocked or "weights"
-        elif changed:
-            gate.use("weights")
-        return blocked
-
-    def save(self):
-        blocked = self.premium_choices()
-        for key, value in (("obs_host", self.host.text().strip()), ("obs_port", self.port.value()),
-                           ("obs_password", self.password.text()), ("twitch_channel", self.twitch.text().strip()),
-                           ("kick_channel", self.kick.text().strip()), ("youtube_video", self.youtube.text().strip()),
-                           ("model", self.model.currentData()), ("language", self.language.currentData()),
-                           ("roman_script", self.roman.isChecked()), ("max_clips", self.clips.value()),
-                           ("clip_length", self.length.value()), ("reduce_motion", self.motion.isChecked()),
-                           ("caption_mode", self.caption_mode.currentData()),
-                           ("export_size", self.size.currentData()), ("export_fps", self.fps.currentData()),
-                           ("enhance", self.enhance.currentData()),
-                           *(("want_" + k, v.value()) for k, v in self.wants.items())):
-            self.w.settings.set(key, value)
-        MOTION.set(reduced=self.motion.isChecked())
-        self.w.connect_obs()
-        self.w.toast("Settings saved" if not blocked else "Settings saved. Some choices need Premium, so the free versions are set.")
-        if blocked:
-            self.w.upgrade(blocked)
-
-
 class MainWindow(QMainWindow):
     def __init__(self, library=None, settings=None, use_obs=True):
         super().__init__()
@@ -931,6 +688,7 @@ class MainWindow(QMainWindow):
         self.review.gate = self.gate
         self.review.upgrade.connect(self.upgrade)
         self.review.compile.connect(self.compile_clips)
+        self.review.find_kills.connect(lambda sid: self.jobs.add("kills", sid))
         self.review.say.connect(self.toast)
         self.settings_page = SettingsPage(self)
         for page in (self.streams, self.settings_page, self.review):
@@ -997,6 +755,9 @@ class MainWindow(QMainWindow):
                 self.jobs.add("captions", s["id"])      # background captions carry on where they stopped
 
     def goto(self, index):
+        if index != 1 and self.stack.currentWidget() is self.settings_page and self.settings_page.dirty():
+            self.toast("Your settings are not saved yet. They wait in Settings until you save or discard them.",
+                       "info")
         self.stack.go((self.streams, self.settings_page)[index])
         self.nav.set_index(index)
         self.centralWidget().calm = False
@@ -1195,6 +956,7 @@ class MainWindow(QMainWindow):
     def on_job_done(self, job, target, result):
         if job == "export":
             self.review.export_progress(target, 0)
+            self.review.export_finished(target, "path" in result)
             if "path" in result:
                 clip = self.library.clip(target)
                 if clip:
@@ -1211,6 +973,16 @@ class MainWindow(QMainWindow):
                 self.toast("Compilation saved: " + os.path.basename(result["path"]))
             elif "error" in result:
                 self.toast(result["error"], "bad")
+        elif job == "kills":
+            self.review.kills_finished(result.get("kills") if "error" not in result else None)
+            if "error" in result:
+                self.toast(result["error"], "info")
+            else:
+                self.toast("Found %d kills, %d new clips. %s." % (result.get("kills", 0), result.get("added", 0),
+                                                                    result.get("note", "")))
+                if self.library.uncaptioned(target):
+                    self.jobs.add("captions", target)
+            self.streams.refresh()
         elif job == "captions":
             if "error" in result:           # quiet: the clips are fine, they just wait for the next try
                 print("captions:", result["error"])

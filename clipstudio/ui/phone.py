@@ -6,7 +6,8 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPaint
 from PySide6.QtMultimedia import QVideoSink
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from ..captions import HOLD, font_for, group_words, shown, style_of
+from ..captions import HOLD, HOOK, TALLY, font_for, group_words, shown, style_of
+from ..effects import tally_at, zoom_at
 from . import theme as T
 from .cards import cover, rounded
 from .fx import alpha, draw_icon, font, glow, tween
@@ -41,6 +42,11 @@ class Phone(QWidget):
         self.pan = 0.0
         self.style = style_of({})
         self.words = []
+        self.zooms = {}             # stream-time punch-in windows, from effects.zoom_windows
+        self.hook = []              # hook lines, shown while the finished clip is under hook_end seconds in
+        self.hook_end = 0.0
+        self.tally = []             # [(finished-clip seconds, label)] from effects.tally
+        self.out_time = None        # where the playhead is in the finished clip, None inside a cut
         self.setMinimumSize(200, 340)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -118,8 +124,15 @@ class Phone(QWidget):
         self.layout_name = layout
         self.update()
 
-    def set_time(self, t):
+    def set_effects(self, zooms, hook, hook_end, tally=None):
+        self.zooms, self.hook, self.hook_end = zooms, hook, hook_end
+        if tally is not None:
+            self.tally = tally
+        self.update()
+
+    def set_time(self, t, out=None):
         self.time = t
+        self.out_time = out
         if self.paused or self.incoming is None:
             self.update()           # while playing, the next frame repaints anyway
 
@@ -158,6 +171,8 @@ class Phone(QWidget):
             p.setFont(font(12))
             p.drawText(s.adjusted(16, 0, -16, 0), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap, self.note)
         self.draw_caption(p, s)
+        self.draw_hook(p, s)
+        self.draw_tally(p, s)
         p.restore()
         p.setBrush(QColor(4, 3, 14))
         p.setPen(Qt.PenStyle.NoPen)
@@ -177,24 +192,113 @@ class Phone(QWidget):
         has_cam = not self.cam_image.isNull()
         if layout == "auto":
             layout = "stack" if has_cam else "blur"
+        zoom = zoom_at(self.zooms, self.time)
+        game, cam = zoom.get("game", 1.0), zoom.get("cam", 1.0)
         if layout == "stack" and has_cam:
             top = QRectF(s.x(), s.y(), s.width(), s.height() * CAM_SHARE)
             bottom = QRectF(s.x(), top.bottom(), s.width(), s.height() - top.height())
-            self.fill(p, self.cam_image, top)
-            self.fill(p, image, bottom)
+            self.fill(p, self.cam_image, top, zoom=cam)
+            self.fill(p, image, bottom, zoom=game)
         elif layout == "crop":
-            self.fill(p, image, s, self.pan)
+            self.fill(p, image, s, self.pan, game)
         else:
-            self.fill(p, self.tiny, s)
+            self.fill(p, self.tiny, s, zoom=game)
             p.fillRect(s, QColor(0, 0, 0, 60))
             height = s.width() * image.height() / max(image.width(), 1)
-            p.drawImage(QRectF(s.x(), s.center().y() - height / 2, s.width(), height), image)
+            p.drawImage(QRectF(s.x(), s.center().y() - height / 2, s.width(), height), image,
+                        self.unzoom(QRectF(0, 0, image.width(), image.height()), image, game))
 
     @staticmethod
-    def fill(p, image, rect, pan=0.0):
+    def unzoom(r, image, zoom):
+        """The part of the picture that shows when it is zoomed around its centre, as the export does."""
+        if zoom == 1.0:
+            return r
+        cx, cy = image.width() / 2, image.height() / 2
+        return QRectF(cx + (r.x() - cx) / zoom, cy + (r.y() - cy) / zoom, r.width() / zoom, r.height() / zoom)
+
+    @classmethod
+    def fill(cls, p, image, rect, pan=0.0, zoom=1.0):
         scale = max(rect.width() / image.width(), rect.height() / image.height())
         w, h = rect.width() / scale, rect.height() / scale
-        p.drawImage(rect, image, QRectF((image.width() - w) * (pan + 1) / 2, (image.height() - h) / 2, w, h))
+        source = QRectF((image.width() - w) * (pan + 1) / 2, (image.height() - h) / 2, w, h)
+        p.drawImage(rect, image, cls.unzoom(source, image, zoom))
+
+    def outlined(self, p, path, fill, outline, width):
+        p.setPen(QPen(outline, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(fill)
+        p.drawPath(path)
+
+    def draw_tally(self, p, s):
+        """The kill count where captions.tally_events puts it, popping in at the kill and fading at its end."""
+        if self.out_time is None or not self.tally:
+            return
+        shown_now = tally_at(self.tally, self.out_time)
+        if not shown_now:
+            return
+        label, since = shown_now
+        k = s.width() / 1080
+        f = QFont()
+        f.setFamilies([TALLY["font"], "Segoe UI"])
+        f.setBold(True)
+        f.setPixelSize(100)
+        f.setPixelSize(max(int(TALLY["size"] * k * 100 / QFontMetricsF(f).height()), 6))
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2 * k)
+        metrics = QFontMetricsF(f)
+        pop = TALLY["pop"] / 100
+        grow = pop + (1 - pop) * min(since / (TALLY["pop_ms"] / 1000), 1)
+        cx, top = s.center().x(), s.y() + TALLY["y"] * k
+        p.save()
+        p.translate(cx, top + metrics.height() / 2)
+        p.scale(grow, grow)
+        p.translate(-cx, -(top + metrics.height() / 2))
+        path = QPainterPath()
+        path.addText(cx - metrics.horizontalAdvance(label) / 2, top + metrics.ascent(), f, label)
+        self.outlined(p, path, QColor("#" + TALLY["color"]), QColor(0, 0, 0), max(TALLY["outline"] * 2 * k, 1.0))
+        p.restore()
+
+    def draw_hook(self, p, s):
+        """The hook exactly where and how captions.hook_event places it: top centre, popping in, fading out."""
+        t = self.out_time
+        if not self.hook or t is None or t >= self.hook_end:
+            return
+        k = s.width() / 1080
+        f = QFont()
+        f.setFamilies([font_for(" ".join(self.hook), {"font": HOOK["font"]}), "Segoe UI", "Nirmala UI"])
+        f.setBold(True)
+        # The export's font size is the full line height (ascent plus descent), Qt's is the em, so measure and match.
+        want = HOOK["size"] * k
+        f.setPixelSize(100)
+        f.setPixelSize(max(int(want * 100 / QFontMetricsF(f).height()), 6))
+        metrics = QFontMetricsF(f)
+        grow = .01 * HOOK["pop"] + (1 - .01 * HOOK["pop"]) * min(t / (HOOK["pop_ms"] / 1000), 1)
+        fade = HOOK["fade_ms"] / 1000
+        p.save()
+        p.setOpacity(min((self.hook_end - t) / fade, 1.0))
+        cx, top = s.center().x(), s.y() + HOOK["y"] * k
+        block = metrics.height() * len(self.hook)
+        p.translate(cx, top + block / 2)
+        p.scale(grow, grow)
+        p.translate(-cx, -(top + block / 2))
+        for i, line in enumerate(self.hook):
+            path = QPainterPath()
+            path.addText(cx - metrics.horizontalAdvance(line) / 2, top + metrics.ascent() + i * metrics.height(), f, line)
+            p.save()
+            p.translate(HOOK["shadow"] * k, HOOK["shadow"] * k)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 160))
+            p.drawPath(path)
+            p.restore()
+            p.setPen(QPen(QColor(0, 0, 0), max(HOOK["outline"] * 2 * k, 1.0), Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(255, 255, 255))
+            p.drawPath(path)
+        p.restore()
 
     def scaled_cam(self, image):
         if not self.facecam or not self.source_size:

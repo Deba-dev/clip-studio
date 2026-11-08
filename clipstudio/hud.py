@@ -54,9 +54,13 @@ def similarity(a, b):
     return float((a * b).mean())
 
 
-def scan(source, duration=0.0, on_progress=None):
-    """Returns (times, slots[n, 10], ability strips[n, h, w]) from the keyframes of a video."""
-    graph = ("[0:v]scale=1920:1080,split[a][b];[a]crop=%d:%d:%d:0[t];[b]crop=%d:%d:%d:975[l];"
+def scan(source, duration=0.0, on_progress=None, view="scale=1920:1080"):
+    """Returns (times, slots[n, 10], ability strips[n, h, w]) from the keyframes of a video.
+
+    view turns the recording into the 1920x1080 game picture (view.game_filter), so vertical and boxed layouts read
+    the same as a plain game recording.
+    """
+    graph = ("[0:v]" + view + ",split[a][b];[a]crop=%d:%d:%d:0[t];[b]crop=%d:%d:%d:975[l];"
              "[t][l]vstack=inputs=2,showinfo[v]" % (WIDTH, TOP, LEFT, WIDTH, LOW, LEFT))
     cmd = [tool("ffmpeg"), "-v", "info", "-nostats", "-skip_frame", "nokey", *input_args(source),
            "-filter_complex", graph, "-map", "[v]", "-fps_mode", "passthrough", "-pix_fmt", "rgb24",
@@ -216,6 +220,18 @@ def read_game(times, slots, strips):
     return {"game": "Valorant", "events": events, "rounds": len(rounds), "live": live, "times": times}
 
 
+def diagnose(times, slots):
+    """What the reader saw, for the stream's report when no game was found."""
+    if times.size < 20:
+        return "Only %d keyframes could be read, too few to follow a match" % times.size
+    slots = drop_overlays(slots)
+    rounds = split_rounds(steady(slots[:, :5].sum(axis=1)), steady(slots[:, 5:].sum(axis=1)))
+    seen = float(slots.any(axis=1).mean())
+    if seen < .05:
+        return "Valorant's top bar with the player portraits was not found in the game picture"
+    return "The top bar was seen in %d%% of keyframes, but only %d rounds could be followed" % (seen * 100, len(rounds))
+
+
 def is_live(game, t):
     """Was a round being played at time t? Lobbies, agent select and scoreboards are not."""
     i = int(np.searchsorted(game["times"], t))
@@ -245,10 +261,10 @@ def skull_runs(frames, fps=4):
     return runs
 
 
-def own_kills(source, start, end):
+def own_kills(source, start, end, view="scale=1920:1080"):
     """Times of the streamer's own kills between two moments, read from the skull banner."""
     start = max(start, 0.0)
-    graph = "fps=4,scale=1920:1080,crop=%d:%d:%d:%d" % (SKULL, SKULL, 960 - SKULL // 2, 860 - SKULL // 2)
+    graph = "fps=4,%s,crop=%d:%d:%d:%d" % (view, SKULL, SKULL, 960 - SKULL // 2, 860 - SKULL // 2)
     cmd = [tool("ffmpeg"), "-v", "error", "-ss", "%.3f" % start, "-t", "%.3f" % (end - start), *input_args(source),
            "-an", "-vf", graph, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
     out = subprocess.run(cmd, capture_output=True, creationflags=HIDE).stdout

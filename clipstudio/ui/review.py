@@ -1,4 +1,5 @@
 """The review desk: this is the product. Scan the shortlist, cut, fix the sound and the words, export."""
+import json
 import os
 import tempfile
 
@@ -11,11 +12,16 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QGridLayout, QH
                                QVBoxLayout, QWidget)
 
 from .. import edit as clip_edit
+from .. import effects
+from .. import games
+from .. import teach
+from .. import view
 from .. import media
 from .. import captions as caps
 from .. import insights
 from ..captions import apply_text
 from ..paths import clip_thumb, signals_file
+from ..render import resolve
 from ..worker import parse_facecam
 from . import theme as T
 from .audio import PreviewAudio
@@ -179,6 +185,7 @@ class ReviewPage(QWidget):
     say = Signal(str, str)
     upgrade = Signal(str)       # a Premium feature or a used-up free cap
     compile = Signal(int, list, str)    # session, clip ids, title
+    find_kills = Signal(int)            # session: learn the marked kills and find every one
 
     def __init__(self, library, settings=None):
         super().__init__()
@@ -187,6 +194,8 @@ class ReviewPage(QWidget):
         self.gate = None            # set by the main window
         self.sid = None
         self.clip = None
+        self.hook_for = None        # the clip whose hook the hook box shows
+        self.exporting = set()      # clips with an export running
         self.cards = []
         self.row = -1
         self.undo_stack = []
@@ -212,9 +221,21 @@ class ReviewPage(QWidget):
         self.make_compilation = Button("Make a compilation", "film")
         self.make_compilation.setToolTip("Joins the kept clips you can see (use the filter for, say, only kills) into one video")
         self.make_compilation.clicked.connect(self.compilation)
+        self.game_box = QComboBox()
+        self.game_box.addItem("Game: not set", "")
+        for key, g in games.GAMES.items():
+            self.game_box.addItem(g["name"], key)
+        self.game_box.setToolTip("This stream's game. Valorant is read from its HUD; other games learn your kill "
+                                 "notice from kills you mark.")
+        self.game_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.game_box.currentIndexChanged.connect(lambda _: self.game_changed())
+        self.reader_line = QLabel("")
+        self.reader_line.setObjectName("mute")
+        self.reader_line.setWordWrap(True)
         head = QHBoxLayout()
         head.addWidget(back)
         head.addWidget(self.title, 1)
+        head.addWidget(self.game_box)
         head.addWidget(self.camera)
         head.addWidget(self.make_compilation)
         head.addWidget(self.export_kept)
@@ -237,10 +258,18 @@ class ReviewPage(QWidget):
         self.sort_box.addItem("Most likely to go viral", "viral")
         self.sort_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.sort_box.currentIndexChanged.connect(lambda _: self.sort_cards())
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search what was said: bhai, clutch, ace…")
+        self.search.setToolTip("Finds words in any clip, in Hindi or Roman letters. Enter opens the first match "
+                               "at the moment it was said.")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _: self.apply_filter())
+        self.search.returnPressed.connect(self.open_match)
         self.list_side = QWidget()
         left = QVBoxLayout(self.list_side)
         left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(6)
+        left.addWidget(self.search)
         left.addWidget(self.filter_box)
         left.addWidget(self.sort_box)
         left.addWidget(self.scroll, 1)
@@ -305,6 +334,7 @@ class ReviewPage(QWidget):
         page.setContentsMargins(20, 12, 20, 12)
         page.setSpacing(6)
         page.addLayout(head)
+        page.addWidget(self.reader_line)
         page.addWidget(self.split, 1)
         page.addLayout(self.build_transport())
         page.addWidget(self.trim)
@@ -419,6 +449,23 @@ class ReviewPage(QWidget):
         col.addWidget(self.heading("Length"))
         col.addLayout(edits)
         col.addSpacing(4)
+        col.addWidget(self.heading("Hook"))
+        self.hook_box = QLineEdit()
+        self.hook_box.setPlaceholderText("Big text for the first 3 seconds, e.g. Bhai ye kya tha")
+        self.hook_box.setToolTip("The first seconds decide whether people keep watching. Empty means no hook.")
+        self.hook_box.setMaxLength(effects.HOOK_MAX)
+        self.hook_box.textEdited.connect(lambda text: self.phone.set_effects(
+            self.phone.zooms, effects.hook_lines(text), self.phone.hook_end))
+        self.hook_box.editingFinished.connect(self.hook_done)
+        suggest = Button("Suggest", "plus")
+        suggest.setToolTip("Fills in a hook from this clip's title ideas. Press again for the next one.")
+        suggest.clicked.connect(self.suggest_hook)
+        hook_row = QHBoxLayout()
+        hook_row.setSpacing(0)
+        hook_row.addWidget(self.hook_box, 1)
+        hook_row.addWidget(suggest)
+        col.addLayout(hook_row)
+        col.addSpacing(4)
         col.addWidget(self.heading("Post it"))
         self.post_titles = QLabel("")
         self.post_titles.setWordWrap(True)
@@ -432,8 +479,78 @@ class ReviewPage(QWidget):
         col.addWidget(self.post_titles)
         col.addWidget(self.post_tags)
         col.addWidget(self.post_copy, 0, Qt.AlignmentFlag.AlignLeft)
+        col.addSpacing(4)
+        col.addWidget(self.heading("Teach a kill"))
+        self.teach_note = QLabel("")
+        self.teach_note.setObjectName("mute")
+        self.teach_note.setWordWrap(True)
+        mark = Button("This frame shows my kill", "skull")
+        mark.setToolTip("Pause where your kill notice is on screen (the banner, the skull, \"knocked out\"), then "
+                        "press this. Two or three kills are enough; each one makes it better.")
+        mark.clicked.connect(self.mark_kill)
+        self.find_button = Button("Find every kill", "target")
+        self.find_button.clicked.connect(self.find_every_kill)
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        row.addWidget(mark)
+        row.addWidget(self.find_button)
+        row.addStretch()
+        col.addWidget(self.teach_note)
+        col.addLayout(row)
         col.addStretch()
         return page
+
+    def game_key(self):
+        return self.game_box.currentData() or ""
+
+    def game_changed(self):
+        if self.loading or not self.sid:
+            return
+        self.library.update_session(self.sid, game=games.name_of(self.game_key()))
+        self.show_teach()
+
+    def show_teach(self):
+        """What the lesson for this game knows so far, and what to do next."""
+        key = self.game_key()
+        if not key:
+            self.teach_note.setText("Choose this stream's game at the top first.")
+            self.find_button.setEnabled(False)
+            return
+        name = games.name_of(key)
+        count = len(teach.examples(key))
+        learned = teach.load(key) is not None
+        if count < teach.MIN_EXAMPLES:
+            text = ("Pause on a frame where your %s kill notice is showing and press the button. %d of %d marked." %
+                    (name, count, teach.MIN_EXAMPLES))
+        else:
+            text = ("%d %s kills marked%s. Find every kill learns from them and adds a clip for every fight, here and "
+                    "on every %s stream after this one." % (count, name, ", already learned" if learned else "", name))
+        if key == "valorant":
+            text = "Valorant is read from its HUD, no teaching needed. Teaching still helps a stream it could not read. " + text
+        self.teach_note.setText(text)
+        self.find_button.setEnabled(count >= teach.MIN_EXAMPLES)
+
+    def mark_kill(self):
+        key = self.game_key()
+        if not key or not self.sid:
+            self.say.emit("Choose this stream's game at the top first", "info")
+            return
+        session = self.library.session(self.sid)
+        area = view.parse(session["view"])
+        # Without a known game area yet, the background job finds it before reading this example.
+        vf = view.game_filter(area, (self.size_info["width"], self.size_info["height"])) \
+            if area and self.size_info else None
+        t = self.player.position() / 1000
+        count = teach.add_example(key, session["source"], t, vf)
+        self.show_teach()
+        self.say.emit("Kill %d marked at %s" % (count, clock(t)[2:]), "good")
+
+    def find_every_kill(self):
+        if self.sid:
+            self.find_button.set_busy(True)
+            self.find_kills.emit(self.sid)
+            self.say.emit("Learning your kill, then looking through the whole stream. It runs in the background.",
+                          "good")
 
     def allowed(self, feature):
         return self.gate is None or self.gate.allowed(feature)
@@ -463,7 +580,26 @@ class ReviewPage(QWidget):
         from PySide6.QtWidgets import QApplication
         game, language = self.session_info()
         QApplication.clipboard().setText(insights.post_text(self.clip, game, language))
-        self.say.emit("Title and hashtags copied", "good")
+        self.post_copy.done("Copied")
+
+    def hook_done(self):
+        """Saves the hook to the clip the box was showing, never to one selected since."""
+        if self.clip and self.clip["id"] == self.hook_for and \
+                self.hook_box.text().strip() != clip_edit.settings(self.clip)["hook"]:
+            self.set_edit(hook=self.hook_box.text().strip())
+
+    def suggest_hook(self):
+        """Cycles through the clip's title ideas. They are a Premium feature, so the hook box stays free to type in."""
+        if not self.clip:
+            return
+        if not self.allowed("titles"):
+            self.upgrade.emit("titles")
+            return
+        ideas = insights.titles(self.clip, self.session_info()[0])
+        if not ideas:
+            return
+        now = clip_edit.settings(self.clip)["hook"]
+        self.set_edit(hook=ideas[(ideas.index(now) + 1) % len(ideas)] if now in ideas else ideas[0])
 
     def build_audio_tab(self):
         self.auto_loud = Toggle("Automatic loudness", True)
@@ -679,8 +815,48 @@ class ReviewPage(QWidget):
         col.addWidget(self.heading("Layout"))
         col.addWidget(self.layout_box)
         col.addWidget(self.pan)
+        col.addSpacing(6)
+        col.addWidget(self.heading("Punch-in zoom"))
+        self.zoom = Toggle("Zoom in on kills, deaths and laughs", True)
+        self.zoom.setToolTip("Snaps in on the game at the second of each kill or death, and on your webcam when you "
+                             "laugh. The times come from the game's HUD and the sound, not from guessing.")
+        self.zoom.toggled.connect(lambda on: self.loading or self.set_edit(zoom=on))
+        self.zoom_note = QLabel("")
+        self.zoom_note.setObjectName("mute")
+        self.zoom_note.setWordWrap(True)
+        col.addWidget(self.zoom)
+        col.addWidget(self.zoom_note)
+        col.addSpacing(6)
+        col.addWidget(self.heading("Kill counter"))
+        self.tally = Toggle("Pop up KILL, DOUBLE KILL, TRIPLE KILL on each kill", True)
+        self.tally.setToolTip("Named the way your game names them: Ace in Valorant, 3K in CS2, Squad wipe in BGMI.")
+        self.tally.toggled.connect(lambda on: self.loading or self.set_edit(tally=on))
+        col.addWidget(self.tally)
         col.addStretch()
         return page
+
+    def show_effects(self):
+        """Zooms and the hook on the phone, and a plain count of what will zoom."""
+        c = self.clip
+        e = clip_edit.settings(c)
+        layout = resolve(c["layout"], self.facecam())
+        zooms = effects.zoom_windows(c, layout)
+        self.phone.set_effects(zooms, effects.hook_lines(e["hook"]),
+                               min(effects.HOOK_SECONDS, clip_edit.length(c)),
+                               effects.tally(c, self.game_key() or "valorant"))
+        kinds = [v["kind"] for v in c.get("events") or [] if v["kind"] in effects.KINDS
+                 and c["start"] <= v["t"] <= c["end"] and (v["kind"] != "laugh" or layout == "stack")]
+        names = {"kill": ("kill", "kills"), "clutch": ("clutch", "clutches"), "death": ("death", "deaths"),
+                 "laugh": ("laugh", "laughs")}
+        found = ", ".join("%d %s" % (kinds.count(k), names[k][kinds.count(k) > 1]) for k in names if k in kinds)
+        if not kinds:
+            laughs = any(v["kind"] == "laugh" for v in c.get("events") or [])
+            self.zoom_note.setText("Your laugh zooms the webcam in the Webcam + game layout." if laughs else
+                                   "No kills, deaths or laughs were found in this clip, so nothing zooms.")
+        elif not e["zoom"]:
+            self.zoom_note.setText("Off. It would zoom on %s." % found)
+        else:
+            self.zoom_note.setText("Zooms on %s. Play the clip to see it on the phone." % found)
 
     def saved_split(self):
         saved = self.settings.get("review_split") if self.settings else None
@@ -693,11 +869,23 @@ class ReviewPage(QWidget):
     # ---- loading
     def open(self, sid):
         self.save_words()
+        self.hook_done()
         self.sid = sid
         self.undo_stack = []
         self.redo_stack = []
         session = self.library.session(sid)
         self.title.setText(self.title.fontMetrics().elidedText(session["name"], Qt.TextElideMode.ElideRight, 520))
+        self.loading = True
+        key = games.key_of(session["game"])
+        self.game_box.setCurrentIndex(max(self.game_box.findData(key), 0))
+        self.loading = False
+        try:
+            seen = json.loads(session["report"] or "{}")
+        except ValueError:
+            seen = {}
+        self.reader_line.setText(games.describe(seen))
+        self.reader_line.setVisible(bool(seen))
+        self.show_teach()
         source = session["source"]
         self.duration = session["duration"] or 1.0
         try:
@@ -720,7 +908,6 @@ class ReviewPage(QWidget):
                 if "laugh" in data:
                     laugh = data["laugh"].astype(np.float32)
                 if "events" in data:
-                    import json
                     events = json.loads(str(data["events"]))
         except (OSError, KeyError, ValueError):
             pass            # streams analyzed by older versions have fewer saved signals until analyzed again
@@ -769,8 +956,16 @@ class ReviewPage(QWidget):
 
     def apply_filter(self):
         tag = self.filter_box.value()
+        query = self.search.text()
         for card in self.cards:
-            card.setVisible(not tag or tag in card.clip["tags"])
+            card.setVisible((not tag or tag in card.clip["tags"]) and
+                            (not query.strip() or insights.find(card.clip, query) is not None))
+
+    def open_match(self):
+        """Enter in the search box: the first match in the list, playing from just before the words."""
+        row = next((i for i, card in enumerate(self.cards) if card.isVisible()), -1) if self.search.text().strip() else -1
+        if row >= 0:
+            self.select(row)
 
     def reload(self):
         """Refreshes in place, so finishing a job never restarts the page or loses the selection."""
@@ -796,6 +991,7 @@ class ReviewPage(QWidget):
 
     def select(self, row):
         self.save_words()
+        self.hook_done()
         if not 0 <= row < len(self.cards):
             return
         if 0 <= self.row < len(self.cards):
@@ -806,7 +1002,8 @@ class ReviewPage(QWidget):
         self.scroll.ensureWidgetVisible(card, 0, 12)
         self.clip = self.library.clip(card.clip["id"])
         self.show_clip()
-        self.seek(self.clip["start"])
+        said = insights.find(self.clip, self.search.text()) if self.search.text().strip() else None
+        self.seek(min(max(said - 1.0, self.clip["start"]), self.clip["end"]) if said is not None else self.clip["start"])
         self.player.play()
 
     def facecam(self):
@@ -828,6 +1025,7 @@ class ReviewPage(QWidget):
         if self.words.toPlainText().split() != [w["w"] for w in c["words"]]:
             self.words.setPlainText(" ".join(w["w"] for w in c["words"]))
         self.open_file.setEnabled(bool(c["exported"]))
+        self.show_exporting()
         self.undo_button.setEnabled(bool(self.undo_stack))
         self.redo_button.setEnabled(bool(self.redo_stack))
         self.auto_loud.setChecked(e["auto_loud"])
@@ -835,6 +1033,12 @@ class ReviewPage(QWidget):
         self.fade_in.set(e["fade_in"])
         self.fade_out.set(e["fade_out"])
         self.pan.set(e["pan"])
+        self.zoom.setChecked(e["zoom"])
+        self.tally.setChecked(e["tally"])
+        if not self.hook_box.hasFocus() or self.hook_for != c["id"]:
+            self.hook_box.setText(e["hook"])
+        self.hook_for = c["id"]
+        self.show_effects()
         style = self.current_style()
         self.show_style(style)
         self.show_post()
@@ -1079,11 +1283,11 @@ class ReviewPage(QWidget):
                 self.player.pause()
             elif landing is not None and landing - t > .05:
                 return self.seek(landing)
-        self.phone.set_time(t)
+        done = clip_edit.to_output(t, self.keep) if self.clip and self.keep else None
+        self.phone.set_time(t, done)
         self.trim.set_play(t)
         self.map.set_play(t)
         if self.clip:
-            done = clip_edit.to_output(t, self.keep)
             self.clock.setText("%s / %s" % (clock(done or 0)[2:], clock(clip_edit.length(self.clip))[2:]))
             self.audio.set_silent(any(a <= t <= b for a, b in clip_edit.settings(self.clip)["mute"]))
 
@@ -1154,6 +1358,26 @@ class ReviewPage(QWidget):
             if card.clip["id"] == cid:
                 card.export = value
                 card.update()
+        if value > 0:
+            self.exporting.add(cid)
+        else:
+            self.exporting.discard(cid)
+        self.show_exporting()
+
+    def show_exporting(self):
+        """The Export button spins while this clip is being exported, so it is never started twice."""
+        self.export_one.set_busy(bool(self.clip) and self.clip["id"] in self.exporting)
+
+    def export_finished(self, cid, ok):
+        self.exporting.discard(cid)
+        self.show_exporting()
+        if ok and self.clip and self.clip["id"] == cid:
+            self.export_one.done("Exported")
+
+    def kills_finished(self, found=None):
+        self.find_button.set_busy(False)
+        if found is not None:
+            self.find_button.done("Found %d" % found, 1800)
 
     def burst_origin(self, root):
         return self.phone.mapTo(root, QPointF(self.phone.width() / 2, self.phone.height() * .55).toPoint())

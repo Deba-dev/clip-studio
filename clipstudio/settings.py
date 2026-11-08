@@ -17,6 +17,7 @@ DEFAULTS = {
     "export_size": "1080", "export_fps": "source", "enhance": "auto", "caption_style_default": {},
     "account_token": "", "account_cache": {}, "billing_live": False, "device_id": "", "usage": {}, "region": "", "my_channel": "", "sign_in_ready": False,
     "downloads_folder": "", "exports_folder": "", "update_pending": "",
+    "game": "",             # the main game, as a games.py key; empty means find it from the HUD or the title
 }
 SECRET = {"obs_password", "account_token"}
 

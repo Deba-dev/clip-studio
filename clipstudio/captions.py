@@ -5,6 +5,8 @@ never disagree. Pick a preset, then change anything: font, colours, outline, sha
 """
 import re
 
+from .effects import HOOK_SECONDS, TALLY_SECONDS, hook_lines
+
 MAX_CHARS = 22
 BREAK_GAP = 0.6
 HOLD = 0.35
@@ -47,6 +49,12 @@ PRESETS = {
                "outline_width": 8, "tilt": 3, "animation": "bounce", "size": 96},
 }
 PREMIUM_PRESETS = {"neon", "fire", "marker"}     # suggested; see the freemium review page
+# The hook: white on a heavy black outline at the top, readable over any webcam or game picture. y is from the top.
+# The kill tally: yellow on black, just under where the webcam sits in the stacked layout. y is from the top.
+TALLY = {"font": "Segoe UI Black", "size": 76, "outline": 8, "y": 720, "color": "FFE100", "pop": 140, "pop_ms": 140,
+         "fade_ms": 160}
+HOOK = {"font": "Segoe UI Black", "size": 88, "outline": 9, "shadow": 3, "y": 210, "pop": 80, "pop_ms": 120,
+        "fade_ms": 220}
 
 
 def style_of(edit, default=None):
@@ -128,7 +136,18 @@ def font_for(text, style):
     return DEVANAGARI_FONT if DEVANAGARI.search(text) else style["font"]
 
 
-def header(style, sample=""):
+def hook_event(text, length):
+    """The hook line at the top: it pops in, holds, and fades as the clip gets going."""
+    lines = hook_lines(text)
+    if not lines:
+        return ""
+    end = min(HOOK_SECONDS, max(length, .5))
+    return "Dialogue: 1,%s,%s,Hook,,0,0,0,,{\\fad(0,%d)\\fscx%d\\fscy%d\\t(0,%d,\\fscx100\\fscy100)}%s" % (
+        stamp(0), stamp(end), HOOK["fade_ms"], HOOK["pop"], HOOK["pop"], HOOK["pop_ms"],
+        "\\N".join(escape(line) for line in lines))
+
+
+def header(style, sample="", hook=""):
     box_alpha = round(255 * (1 - style["box_opacity"] / 100))
     border = 3 if style["box"] else 1
     outline = 14 if style["box"] else style["outline_width"]       # with a box, Outline is the box padding
@@ -138,12 +157,37 @@ def header(style, sample=""):
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, "
             "Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
             "MarginL, MarginR, MarginV, Encoding\n"
-            "Style: Cap,%s,%d,%s,%s,%s,%s,%d,%d,0,0,100,100,%d,%d,%d,%d,%d,2,70,70,%d,1\n\n"
+            "Style: Cap,%s,%d,%s,%s,%s,%s,%d,%d,0,0,100,100,%d,%d,%d,%d,%d,2,70,70,%d,1\n"
+            "%s\n"
             "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n") % (
         font_for(sample, style), style["size"], bgr(style["text"]),
         bgr(style["text"]) if style["highlight_mode"] != "fill" else bgr(style["text"]),
         outline_colour, bgr(style["shadow_color"], 96), -1 if style["bold"] else 0, -1 if style["italic"] else 0,
-        style["spacing"], style["tilt"], border, outline, style["shadow"], style["y"])
+        style["spacing"], style["tilt"], border, outline, style["shadow"], style["y"], hook_style(hook) + tally_style())
+
+
+def tally_style():
+    """Top-centred, yellow on black, letters spaced a little apart like a game's own kill banner."""
+    return "Style: Tally,%s,%d,%s,&H00FFFFFF,&H00000000,&H60000000,-1,0,0,0,100,100,2,0,1,%d,2,8,60,60,%d,1\n" % (
+        TALLY["font"], TALLY["size"], bgr(TALLY["color"]), TALLY["outline"], TALLY["y"])
+
+
+def tally_events(marks, length):
+    """One pop-up per kill. Each lasts until the next kill, so a fast double kill reads KILL then DOUBLE KILL."""
+    out = []
+    for i, (at, label) in enumerate(marks):
+        end = min(at + TALLY_SECONDS, marks[i + 1][0] if i + 1 < len(marks) else at + TALLY_SECONDS, length)
+        if end - at < .1:
+            continue
+        out.append("Dialogue: 2,%s,%s,Tally,,0,0,0,,{\\fad(0,%d)\\fscx%d\\fscy%d\\t(0,%d,\\fscx100\\fscy100)}%s" % (
+            stamp(at), stamp(end), TALLY["fade_ms"], TALLY["pop"], TALLY["pop"], TALLY["pop_ms"], escape(label)))
+    return out
+
+
+def hook_style(hook=""):
+    """Top-centred (alignment 8), white on a heavy black outline."""
+    return "Style: Hook,%s,%d,&H00FFFFFF,&H00FFFFFF,&H00000000,&H60000000,-1,0,0,0,100,100,0,0,1,%d,%d,8,60,60,%d,1\n" % (
+        font_for(hook, {"font": HOOK["font"]}), HOOK["size"], HOOK["outline"], HOOK["shadow"], HOOK["y"])
 
 
 def entrance(style, first):
@@ -181,8 +225,8 @@ def plain_tags(style, first=False):
     return "{\\c%s&\\3c%s&\\bord%d%s}" % (bgr(style["text"]), outline, border, scale)
 
 
-def build_ass(words, start, end, style=None, **old):
-    """words are in stream time; output times are relative to the clip start.
+def build_ass(words, start, end, style=None, hook="", tally=(), **old):
+    """words are in stream time; output times are relative to the clip start. hook is the opening line, if any.
 
     old keeps the former call style working: size=, margin=, color=.
     """
@@ -214,5 +258,9 @@ def build_ass(words, start, end, style=None, **old):
             body = " ".join((word_tags(style) + t + plain_tags(style, i == 0)) if j == i else t
                             for j, t in enumerate(texts))
             events.append("Dialogue: 0,%s,%s,Cap,,0,0,0,,%s%s" % (stamp(a), stamp(b), entrance(style, i == 0), body))
+    top = hook_event(hook, end - start)
+    if top:
+        events.append(top)
+    events += tally_events(list(tally), end - start)
     sample = " ".join(w["w"] for w in inside)
-    return header(style, sample) + "\n".join(events) + "\n"
+    return header(style, sample, hook) + "\n".join(events) + "\n"

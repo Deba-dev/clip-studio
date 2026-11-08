@@ -79,6 +79,18 @@ def do_captions(library, sid):
     return 0
 
 
+def do_kills(library, sid):
+    """Teach a kill: learn from the marked kills for this stream's game, then find every kill in the stream."""
+    try:
+        found, added, message = analyze.find_taught_kills(
+            library, sid, report=lambda stage, value: say(stage=stage, value=round(value, 3)))
+        say(done=True, kills=found, added=added, note=message)
+    except Exception as e:
+        say(error=str(e)[:300])
+        return 1
+    return 0
+
+
 def do_fetch(library, sid):
     """Download a past stream, pick up its chat replay if there is one, then analyze it as usual."""
     session = library.session(sid)
@@ -174,7 +186,7 @@ def do_compile(library, sid):
                     lambda v, note="", share=share: say(stage="Making the compilation", value=round((share[0] + v) / share[1], 3),
                                                         note="Clip %d of %d" % (share[0] + 1, share[1])),
                     info["audio_tracks"] > 0, out=out, fps=fps, enhance=enhance,
-                    caption_default=settings.get("caption_style_default")))
+                    caption_default=settings.get("caption_style_default"), game=session["game"] or ""))
             listing = render_list = os.path.join(tmp, "parts.txt")
             with open(render_list, "w", encoding="utf-8") as f:
                 for path in parts:
@@ -221,7 +233,7 @@ def do_export(library, cid):
                                   lambda v, note="": say(stage="Exporting", value=round(v, 3), note=note),
                                   info["audio_tracks"] > 0,
                                   out=out, fps=fps, enhance=enhance,
-                                  caption_default=settings.get("caption_style_default"))
+                                  caption_default=settings.get("caption_style_default"), game=session["game"] or "")
         library.update_clip(cid, state="exported", exported=path)
         if Gate(settings).allowed("titles"):        # a ready-to-paste title and hashtags next to the video
             from . import insights
@@ -271,9 +283,9 @@ def main(args):
     attach_streams()
     library = Library(os.environ.get("CLIPSTUDIO_DB") or None)
     job, target = args[0], int(args[1])
-    lock = hold_session(target) if job in ("analyze", "fetch", "captions") else True
+    lock = hold_session(target) if job in ("analyze", "fetch", "captions", "kills") else True
     if not lock:
         say(busy=True)
         return 0
     return {"analyze": do_analyze, "fetch": do_fetch, "export": do_export, "captions": do_captions,
-            "compile": do_compile}[job](library, target)
+            "compile": do_compile, "kills": do_kills}[job](library, target)

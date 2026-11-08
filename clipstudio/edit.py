@@ -8,13 +8,16 @@ The clip's start and end stay in stream time. Everything else lives in clip["edi
     mute       [[a, b], ...] stream-time ranges silenced, for example a slur or a teammate's name
     pan        -1..1, where the Centre crop sits across the frame
     caption_size, caption_y, caption_color
+    zoom       punch in on the clip's kills, deaths and laughs (see effects.py)
+    hook       text on screen for the first seconds, empty for none
+    tally      pop up the kill count (KILL, DOUBLE KILL...) at each kill
 """
 import math
 
 TARGET_LUFS = -14.0     # what YouTube Shorts, TikTok and Reels play at
 TRUE_PEAK = -1.5
 DEFAULTS = {"cuts": [], "mute": [], "auto_loud": True, "gain_db": 0.0, "fade_in": 0.0, "fade_out": 0.0, "pan": 0.0,
-            "caption_size": 84, "caption_y": 560, "caption_color": "FFE100"}
+            "caption_size": 84, "caption_y": 560, "caption_color": "FFE100", "zoom": True, "hook": "", "tally": True}
 MIN_PART = 0.1
 METER_OFFSET = -3.0     # mono RMS reads 3 dB under stereo LUFS. Measured on seven real clips: within 1.7 dB after this
 
@@ -124,4 +127,6 @@ def shifted(clip, offset):
             "cuts": [[a - offset, b - offset] for a, b in e["cuts"]],
             "mute": [[a - offset, b - offset] for a, b in e["mute"]]}
     words = [{**w, "s": w["s"] - offset, "e": w["e"] - offset} for w in clip.get("words") or []]
-    return {**clip, "start": clip["start"] - offset, "end": clip["end"] - offset, "edit": edit, "words": words}
+    events = [{**v, "t": v["t"] - offset} for v in clip.get("events") or []]
+    return {**clip, "start": clip["start"] - offset, "end": clip["end"] - offset, "edit": edit, "words": words,
+            "events": events}

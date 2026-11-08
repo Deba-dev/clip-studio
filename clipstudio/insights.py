@@ -7,10 +7,12 @@ holds attention, and a moment that stood out from the rest of the stream. It is 
 import re
 
 from . import edit as clip_edit
+from .games import GAMES
+from .roman import to_roman
 
 REACTION = re.compile(r"\b(bhai|bro|kya|what|oh|no+|omg|wtf|haha+|lol|yaar|arre|abe|wow|bruh|damn|crazy|insane|"
                       r"clutch|ace|sorry|kaise|kaisa|nahi|nooo+)\b", re.I)
-GAME_TAGS = {"Valorant": ["#valorant", "#valorantclips", "#valorantindia"]}
+GAME_TAGS = {g["name"]: g["tags"] for g in GAMES.values()}
 KIND_TAGS = {"kills": ["#clutch", "#headshot"], "funny": ["#funny", "#funnymoments"], "deaths": ["#fail", "#gamingfails"],
              "hype": ["#hype"], "marked": ["#highlights"]}
 LANGUAGE_TAGS = {"hi": ["#hindi", "#hinglish", "#indiangamer"], "bn": ["#bengali", "#indiangamer"],
@@ -22,6 +24,27 @@ TEMPLATES = {
     "hype": ["Chat went crazy for this", "The loudest moment of the stream", "This is why I stream"],
     "marked": ["You have to see this", "Best moment of the stream", "Wait for it"],
 }
+
+
+def searchable(text):
+    """Lower case Roman letters and digits only, so "भाई", "Bhai!" and "bhai" all read the same."""
+    return " ".join(re.sub(r"[^\w]+", " ", to_roman(text or "").lower()).split())
+
+
+def find(clip, query):
+    """Stream time where the query was said in this clip, the clip start for a name match, or None."""
+    q = searchable(query)
+    if not q:
+        return None
+    words = clip.get("words") or []
+    text, starts = "", []
+    for w in words:
+        starts.append(len(text))
+        text += searchable(w["w"]) + " "
+    at = (" " + text).find(" " + q)        # from the start of a word, so "ace" does not match "place"
+    if at >= 0:
+        return words[max(i for i, s in enumerate(starts) if s <= at)]["s"]
+    return clip["start"] if q in searchable(clip.get("title")) else None
 
 
 def virality(clip, best_score=None):

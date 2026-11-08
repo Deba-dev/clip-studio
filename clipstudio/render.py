@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 
 from . import edit as clip_edit
+from . import effects
+from . import games
 from . import upscale
 from .captions import build_ass, style_of
 from .media import HIDE, input_args
@@ -77,15 +79,35 @@ def enlargement(layout, size, out=(1080, 1920), facecam=None):
     return out_w / width
 
 
-def layout_filter(layout, size, facecam=None, src="[0:v]", pan=0.0, out=(1080, 1920), enhance="off"):
+def punch(src, w, h, zoom, windows, name):
+    """A w x h picture zoomed around its centre during the windows (output seconds). Returns (graph text, new pad).
+
+    A centred crop of a copy is scaled back to full size and laid over the original only while a window is open, so
+    the rest of the clip is untouched and the zoom snaps in on the frame of the event.
+    """
+    if not windows:
+        return "", src
+    cw, ch = even(w / zoom), even(h / zoom)
+    enable = "+".join("between(t,%.3f,%.3f)" % (a, b) for a, b in windows)
+    return ("%ssplit=2[%s0][%s1];[%s1]crop=%d:%d:%d:%d,scale=%d:%d:flags=lanczos[%s2];"
+            "[%s0][%s2]overlay=0:0:enable='%s'[%s3];") % (
+        src, name, name, name, cw, ch, (w - cw) // 2, (h - ch) // 2, w, h, name, name, name, enable, name), \
+        "[%s3]" % name
+
+
+def layout_filter(layout, size, facecam=None, src="[0:v]", pan=0.0, out=(1080, 1920), enhance="off", zooms=None):
     """Builds the video graph. Output pad is [v]. facecam is (x, y, w, h) in source pixels.
 
     enhance "auto" cleans compression noise off a low-quality source before enlarging it, and sharpens whenever the
     picture is enlarged a lot. Only LGPL filters may appear here: the released app ships an LGPL FFmpeg, which has no
     boxblur, eq, hqdn3d or smartblur.
+
+    zooms is {"game": [(a, b), ...], "cam": [...]} in output seconds, from effects.output_windows. The game zooms
+    around the centre of the source frame, the webcam around the centre of its own box.
     """
     out_w, out_h = out
     layout = resolve(layout, facecam)
+    zooms = zooms or {}
     head = ""
     if enhance == "auto" and min(size) < LOW_SOURCE:
         head, src = src + "atadenoise[clean];", "[clean]"
@@ -94,12 +116,15 @@ def layout_filter(layout, size, facecam=None, src="[0:v]", pan=0.0, out=(1080, 1
         x, y, w, h = facecam
         cam_h = even(out_h * 680 / 1920)
         game_h = out_h - cam_h
-        return head + (src + "split=2[a][b];"
-                       "[a]crop=%d:%d:%d:%d,scale=%d:%d:force_original_aspect_ratio=increase:flags=lanczos,"
-                       "crop=%d:%d[cam];"
-                       "[b]scale=-2:%d:flags=lanczos,crop=%d:%d[game];"
-                       "[cam][game]vstack=inputs=2,setsar=1%s[v]") % (
-            w, h, x, y, out_w, cam_h, out_w, cam_h, game_h, out_w, game_h, tail)
+        cam_zoom, cam = punch("[craw]", w, h, effects.ZOOM["cam"], zooms.get("cam"), "zc")
+        game_zoom, game = punch("[b]", size[0], size[1], effects.ZOOM["game"], zooms.get("game"), "zg")
+        return head + (src + "split=2[a][b];[a]crop=%d:%d:%d:%d[craw];" % (w, h, x, y) + cam_zoom + game_zoom +
+                       cam + "scale=%d:%d:force_original_aspect_ratio=increase:flags=lanczos,crop=%d:%d[cam];"
+                       % (out_w, cam_h, out_w, cam_h) +
+                       game + "scale=-2:%d:flags=lanczos,crop=%d:%d[game];" % (game_h, out_w, game_h) +
+                       "[cam][game]vstack=inputs=2,setsar=1%s[v]" % tail)
+    zoomed, src = punch(src, size[0], size[1], effects.ZOOM["game"], zooms.get("game"), "zg")
+    head += zoomed
     if layout == "crop":
         return head + src + "scale=-2:%d:flags=lanczos,crop=%d:%d:(iw-%d)*%.3f:0,setsar=1%s[v]" % (
             out_h, out_w, out_h, out_w, (pan + 1) / 2, tail)
@@ -189,7 +214,9 @@ def build_command(source, clip, size, out_path, ass_path=None, facecam=None, enc
                   measured=None, out=(1080, 1920), fps=30, enhance="off"):
     joined, pad = join_parts(clip, "v")
     e = clip_edit.settings(clip)
-    graph = joined + layout_filter(clip.get("layout", "auto"), size, facecam, pad, e["pan"], out, enhance)
+    layout = clip.get("layout", "auto")
+    zooms = effects.output_windows(clip, resolve(layout, facecam))
+    graph = joined + layout_filter(layout, size, facecam, pad, e["pan"], out, enhance, zooms)
     if ass_path:
         graph = graph[:-3] + ",subtitles='%s'[v]" % filter_path(ass_path)
     maps = ["-map", "[v]"]
@@ -208,7 +235,7 @@ def build_command(source, clip, size, out_path, ass_path=None, facecam=None, enc
 
 
 def export_clip(source, clip, size, folder, facecam=None, on_progress=None, audio=True, out=(1080, 1920), fps=30,
-                enhance="off", caption_default=None):
+                enhance="off", caption_default=None, game=""):
     """Writes to a temporary name first, so a crash can never leave a broken file that looks finished."""
     base = clean_name(clip.get("title") or "clip %d" % clip.get("rank", 1))
     final = os.path.join(folder, base + ".mp4")
@@ -235,11 +262,12 @@ def export_clip(source, clip, size, folder, facecam=None, on_progress=None, audi
                 facecam = tuple(v * scale for v in facecam) if facecam else None
         measured = measure_loudness(source, clip) if audio and e["auto_loud"] else None
         ass = None
-        if clip.get("words"):
+        marks = effects.tally(clip, games.key_of(game))
+        if clip.get("words") or e["hook"].strip() or marks:
             ass = os.path.join(tmp, "captions.ass")
             with open(ass, "w", encoding="utf-8") as f:
                 f.write(build_ass(clip_edit.retime_words(clip), 0.0, length,
-                                  style_of(clip.get("edit"), caption_default)))
+                                  style_of(clip.get("edit"), caption_default), hook=e["hook"], tally=marks))
         cmd = build_command(source, clip, size, partial, ass, facecam, audio=audio, measured=measured, out=out,
                             fps=fps, enhance=enhance)
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",

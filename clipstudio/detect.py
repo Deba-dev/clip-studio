@@ -7,6 +7,8 @@ import re
 
 import numpy as np
 
+from . import games
+
 BASELINE = 301          # seconds of rolling context
 MIN_GAP = 20            # two moments closer than this are the same moment
 LEAD_SHARE = 0.72       # most of a clip sits before the peak, so the setup survives
@@ -180,66 +182,143 @@ def moment(first, last, peak, score, lead, tail, duration, tags, reasons, title,
             "last": float(last), "tags": tags, "reasons": reasons, "title": title, "events": events}
 
 
-def kill_moment(kills, lanes, duration):
-    first, last = kills[0]["at"], kills[-1]["at"]
-    bonus, laughed, _ = reaction(lanes, last)
-    n = min(len(kills), 5)
-    reasons = ["%d enemies went down in %ds" % (n, last - first + 1) if n > 1 else "An enemy went down"]
+DEAD_TIME = 12          # a quiet stretch longer than this between kills is cut down in a multi-kill clip
+KEEP_AFTER, KEEP_BEFORE = 3.0, 4.0      # what stays of it: the end of one fight and the setup of the next
+MAX_SPAN = 240          # a multi-kill clip may cover this much stream once the quiet parts are cut
+
+
+def action_edges(times, duration, lead=8, tail=5):
+    """Edges and cuts for a run of action. Quiet walking between kills is cut, so a slow ace still fits a Short.
+
+    Returns (start, end, cuts) with cuts as [[a, b], ...] in stream time, the way clip edits store them.
+    """
+    times = sorted(times)
+    first, last = times[0], times[-1]
+    start, end = max(first - lead, 0.0), min(last + tail, duration)
+    cuts = []
+    for keep_after, keep_before in ((KEEP_AFTER, KEEP_BEFORE), (2.0, 2.5)):
+        cuts = [[round(a + keep_after, 2), round(b - keep_before, 2)]
+                for a, b in zip(times, times[1:]) if b - a > max(DEAD_TIME, keep_after + keep_before + 1)]
+        if end - start - sum(b - a for a, b in cuts) <= LONGEST:
+            break
+    while end - start - sum(b - a for a, b in cuts) > LONGEST and start < last - 2:
+        start = min(start + 1.0, last - 2)      # still too long: the earliest part goes
+        cuts = [c for c in cuts if c[1] > start]
+        if cuts and cuts[0][0] < start:
+            cuts[0][0] = start
+    if not cuts and end - start < SHORTEST:
+        start = max(end - SHORTEST, 0.0)
+    if end - start > MAX_SPAN:
+        start = end - MAX_SPAN
+        cuts = [c for c in cuts if c[1] > start]
+    return start, end, [c for c in cuts if c[1] > c[0] and c[0] > start]
+
+
+def multi_kill(kills, lanes, duration, key="valorant", round_no=None, clutch=None, deaths=()):
+    """One clip for the streamer's kills in one round or one fight, with any clutch and the reaction after."""
+    kills = sorted(kills)
+    n = len(kills)
+    key_times = kills + ([clutch["at"]] if clutch else [])
+    bonus, laughed, _ = reaction(lanes, max(key_times))
+    title = games.multi_name(key, n) if n else "Clutch"
+    score = KILL_SCORE[min(n, 5)] + (2.0 if n else 0) + max(n - 5, 0) * .8 + bonus
+    where = " in round %d" % round_no if round_no else (" in one fight" if n > 1 else "")
+    reasons = (["You got %d kills%s" % (n, where) if n > 1 else "You got the kill"]) if n else []
+    events = [{"t": float(k), "kind": "kill"} for k in kills]
+    if clutch:
+        title = "1v%d clutch" % clutch["against"] + (", " + title.lower() if n >= 2 else "")
+        score = max(score, 9.0 + clutch["against"] + bonus) + 1.0
+        reasons.insert(0, "You won the round alone against %d" % clutch["against"])
+        events.append({"t": float(clutch["at"]), "kind": "clutch"})
     if laughed:
         reasons.append("You laughed right after")
-    m = moment(first, last, last, KILL_SCORE[n] + bonus, 12, 5, duration, ["kills"] + (["funny"] if laughed else []),
-               reasons, KILL_NAME[n], [{"t": k["at"], "kind": "kill"} for k in kills])
-    m["round"] = kills[0]["round"]
+    start, end, cuts = action_edges(key_times, duration, 8 if n else 22, 5)
+    events += [{"t": float(d), "kind": "death"} for d in deaths if start <= d <= end]
+    m = {"peak": float(max(key_times)), "score": float(score), "start": start, "end": end,
+         "first": float(min(key_times)), "last": float(max(key_times)),
+         "tags": ["kills"] + (["funny"] if laughed else []), "reasons": reasons, "title": title, "events": events}
+    if round_no:
+        m["round"] = round_no
+    if cuts:
+        m["edit"] = {"cuts": cuts}
+        m["reasons"] = m["reasons"] + ["The quiet parts between kills are cut out"]
     return m
 
 
-def game_moments(game, lanes, duration):
-    """Turns the HUD's events into moments: kill bursts, reacted-to deaths and clutches."""
+def death_moment(t, lanes, duration):
+    """Every death is a clip. A death you reacted to ranks higher; a quiet one waits at the bottom of the list."""
+    bonus, laughed, shouted = reaction(lanes, t)
+    reasons = ["You died"] + (["You laughed about it"] if laughed else []) + (["You yelled"] if shouted else [])
+    return moment(t, t, t, 1.5 + bonus * 1.4, 12, 8, duration, ["deaths"] + (["funny"] if laughed else []), reasons,
+                  "Death reaction" if bonus >= .5 else "Death", [{"t": float(t), "kind": "death"}])
+
+
+def located(game, lanes):
+    """Events placed on the gunshot that caused them. A clutch is a round result, so it keeps its own time."""
     gun = lanes["gun"] if lanes else None
-    events = [dict(e, at=locate(e, gun)) for e in game["events"]]
-    out = []
-    burst = []
+    return [dict(e, at=e["t"]) if e["kind"] == "clutch" else dict(e, at=locate(e, gun)) for e in game["events"]]
+
+
+def bursts(events):
+    """Kills by the whole team, grouped by round and by time, ready for a closer look at whose they were."""
+    out, burst = [], []
     for e in sorted((e for e in events if e["kind"] == "enemy_down"), key=lambda e: e["at"]):
         if burst and (e["at"] - burst[-1]["at"] > BURST or e["round"] != burst[-1]["round"]):
-            out.append(kill_moment(burst, lanes, duration))
+            out.append(burst)
             burst = []
         burst.append(e)
     if burst:
-        out.append(kill_moment(burst, lanes, duration))
-    for e in events:
-        if e["kind"] == "you_down":
-            bonus, laughed, shouted = reaction(lanes, e["at"])
-            if bonus < .5:
-                continue        # dying is routine. Dying and reacting to it is the clip
-            reasons = ["You died"] + (["You laughed about it"] if laughed else []) + (["You yelled"] if shouted else [])
-            out.append(moment(e["at"], e["at"], e["at"], 2.5 + bonus * 1.4, 12, 8, duration,
-                              ["deaths"] + (["funny"] if laughed else []), reasons, "Death reaction",
-                              [{"t": e["at"], "kind": "death"}]))
-        elif e["kind"] == "clutch":
-            n = e["against"]
-            out.append(moment(e["t"] - 22, e["t"], e["t"], 9.0 + n, 6, 5, duration, ["kills"],
-                              ["You won the round alone against %d" % n], "1v%d clutch" % n,
-                              [{"t": e["t"], "kind": "clutch"}]))
+        out.append(burst)
     return out
 
 
-def apply_own_kills(m, own, dead=None):
-    """Credits a kill moment. The skull banner also shows while spectating, so anything after the streamer's death
-    in that round belongs to a teammate. dead is the last moment the streamer was surely alive."""
-    mine = [t for t in own if dead is None or t < dead]
-    n = min(len(mine), 5)
-    if n:
-        m["score"] = KILL_SCORE[n] + 2.0 + (m["score"] - KILL_SCORE[min(len(m["events"]), 5)])
-        m["title"] = KILL_NAME[n]
-        m["reasons"] = ["You got %d kills" % n if n > 1 else "You got the kill"] + m["reasons"][1:]
-        m["events"] = [{"t": t, "kind": "kill"} for t in mine]
-        m["first"], m["last"], m["peak"] = mine[0], mine[-1], mine[-1]
-    else:
-        m["score"] *= .4
-        m["title"] = "Team fight"
-        m["tags"] = ["hype"] + [t for t in m["tags"] if t not in ("kills", "hype")]
-        m["reasons"] = ["Your team got the kill"] + m["reasons"][1:]
-    return m
+def mine(times, dead=None):
+    """The skull banner also shows while spectating, so a skull after the streamer died belongs to a teammate."""
+    return [t for t in times if dead is None or t < dead]
+
+
+def game_moments(game, lanes, duration, own=None, team=(), key="valorant"):
+    """The game's events as clips: one per round with the streamer's kills, every clutch, every death.
+
+    own: [(time, round)] of the streamer's own kills, from the skull banner. None means nothing could be checked,
+    so every enemy that went down counts. team: bursts nobody credited to the streamer; they become a clip only when
+    the streamer reacted, since a teammate's kill is not your highlight.
+    """
+    events = located(game, lanes)
+    if own is None:
+        own = [(e["at"], e["round"]) for e in events if e["kind"] == "enemy_down"]
+    deaths = [e["at"] for e in events if e["kind"] == "you_down"]
+    clutches = {e["round"]: e for e in events if e["kind"] == "clutch"}
+    by_round = {}
+    for t, r in own:
+        if not any(abs(t - u) < .75 for u in by_round.get(r, [])):
+            by_round.setdefault(r, []).append(t)
+    out = [multi_kill(kills, lanes, duration, key, r, clutches.get(r), deaths)
+           for r, kills in sorted(by_round.items())]
+    out += [multi_kill([], lanes, duration, key, r, c, deaths) for r, c in clutches.items() if r not in by_round]
+    out += [death_moment(t, lanes, duration) for t in deaths]
+    for burst in team:
+        last = burst[-1]["at"]
+        bonus, laughed, _ = reaction(lanes, last)
+        if bonus >= .5:
+            out.append(moment(burst[0]["at"], last, last, 2.0 + bonus, 12, 5, duration,
+                              ["hype"] + (["funny"] if laughed else []), ["Your team got the kill", "You reacted"],
+                              "Team fight", [{"t": float(e["at"]), "kind": "kill"} for e in burst]))
+    return out
+
+
+def fight_moments(kills, lanes, duration, key):
+    """For games without rounds: kills close together are one fight, and each fight is one clip."""
+    gap = games.fight_gap(key)
+    out, fight = [], []
+    for t in sorted(kills):
+        if fight and t - fight[-1] > gap:
+            out.append(multi_kill(fight, lanes, duration, key))
+            fight = []
+        fight.append(t)
+    if fight:
+        out.append(multi_kill(fight, lanes, duration, key))
+    return out
 
 
 def laugh_moments(lanes, duration):
@@ -269,6 +348,16 @@ def absorb(keep, other):
     keep["tags"] = keep["tags"] + [t for t in other["tags"] if t not in keep["tags"]]
     keep["reasons"] = keep["reasons"] + [r for r in other["reasons"] if r not in keep["reasons"]]
     keep["events"] = keep.get("events", []) + other.get("events", [])
+    cut = (keep.get("edit") or {}).get("cuts") or (other.get("edit") or {}).get("cuts")
+    if cut:
+        # A multi-kill clip's cuts only fit its own edges, so the clip keeps one geometry: the game's, if either
+        # side has it. A hotkey or a laugh on the same moment adds its reasons and nothing else.
+        if "first" not in keep and "first" in other:
+            for k in ("start", "end", "first", "last", "peak", "edit", "round"):
+                if k in other:
+                    keep[k] = other[k]
+            keep["title"] = other.get("title") or keep.get("title")
+        return
     if "first" in other:
         keep["first"] = min(keep.get("first", other["first"]), other["first"])
         keep["last"] = max(keep.get("last", other["last"]), other["last"])

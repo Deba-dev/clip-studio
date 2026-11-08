@@ -2,7 +2,9 @@
 
 1. Audio, chat and hotkeys rank the whole stream in about the time FFmpeg takes to read the audio. Sound tagging rides
    along on that same read and finds laughter and gunfire.
-2. Keyframes of the video are read for the game's own scoreboard, which is how kills and deaths are found.
+2. The game picture is found inside the recording (a vertical stream stacks the webcam over a cropped game), and
+   its keyframes are read for Valorant's own scoreboard, which is how kills and deaths are found. Every kill is then
+   checked for being the streamer's own. Other games use the kill notice they were taught (teach.py).
 3. Speech recognition then runs on the best clips first, so the review desk opens quickly. Every other moment found
    is saved as a clip too, and a separate background job captions those one by one afterwards.
 """
@@ -11,14 +13,12 @@ import shutil
 
 import numpy as np
 
-from . import detect, hud, media
+from . import detect, games, hud, media, teach, view
 from .paths import clip_thumb, session_thumb, signals_file
 from .settings import Settings
 
 WINDOW_PAD = 10         # extra audio around a candidate, so the transcript can find where the thought began
-KILL_CHECKS = 3         # kill moments checked for the streamer's own skull banner, per clip wanted
-KILL_CHECKS_MIN = 40    # with every moment kept, at least this many kill moments get the closer look
-ALL_MOMENTS = 150       # a sanity cap on clips per stream; a 4-hour stream rarely has more real moments than this
+ALL_MOMENTS = 250       # a sanity cap on clips per stream: every kill round and every death is a clip now
 
 
 def make_previews(source, sid, picks, report):
@@ -41,28 +41,108 @@ def make_tagger(duration):
         return None
 
 
-def read_game(source, info, report):
-    if not info["width"] or abs(info["width"] / max(info["height"], 1) - 16 / 9) > .02:
-        return None             # the HUD reader knows 16:9 only, and a stretched 4:3 would misread
+def game_view(library, sid, source, info):
+    """Where the game is in this recording, found once and remembered. Returns (area, layout, ffmpeg filter)."""
+    size = (info["width"], info["height"])
+    session = library.session(sid)
+    area = view.parse(session["view"])
+    layout = "remembered"
+    if not area:
+        area, layout = view.find_game_area(source, size, info["duration"])
+        library.update_session(sid, view="%d,%d,%d,%d" % area)
+    return area, layout, view.game_filter(area, size)
+
+
+def which_game(settings, session):
+    """The stream's own game if it has one, then the main game in Settings, then whatever the title names."""
+    return games.key_of(session["game"]) or games.key_of(settings.get("game")) or games.guess(session["name"])
+
+
+def read_game(source, info, report, vf="scale=1920:1080"):
+    """Valorant's HUD through the game picture. Returns (game or None, a sentence on what was seen)."""
     try:
-        times, slots, strips = hud.scan(source, info["duration"], lambda v: report("Reading the game", v))
-        return hud.read_game(times, slots, strips)
-    except (OSError, ValueError, RuntimeError):
+        times, slots, strips = hud.scan(source, info["duration"], lambda v: report("Reading the game", v), vf)
+    except (OSError, ValueError, RuntimeError) as e:
+        return None, "The video could not be read for the game: %s" % str(e)[:80]
+    game = hud.read_game(times, slots, strips)
+    return game, ("Followed %d rounds" % game["rounds"]) if game else hud.diagnose(times, slots)
+
+
+def credit_kills(source, game, lanes, vf, report):
+    """Looks at every kill for the streamer's own skull banner. Returns (own [(t, round)], team bursts)."""
+    events = detect.located(game, lanes)
+    deaths = {e["round"]: e["from"] for e in events if e["kind"] == "you_down"}
+    groups = detect.bursts(events)
+    own, team = [], []
+    for i, burst in enumerate(groups):
+        report("Checking kills", i / max(len(groups), 1))
+        seen = hud.own_kills(source, burst[0]["at"] - 6, burst[-1]["at"] + 2, vf)
+        times = detect.mine(seen, deaths.get(burst[0]["round"]))
+        own += [(t, burst[0]["round"]) for t in times]
+        if not times:
+            team.append(burst)
+    return own, team
+
+
+def load_lanes(sid):
+    """The sound lanes saved by analysis, for jobs that run later. Missing lanes read as silence."""
+    try:
+        with np.load(signals_file(sid)) as z:
+            lanes = {k: z[k].astype(np.float32) for k in ("laugh", "gun") if k in z.files}
+    except (OSError, ValueError):
         return None
+    if not lanes:
+        return None
+    n = max(v.size for v in lanes.values())
+    for k in ("laugh", "gun", "shout"):
+        lanes.setdefault(k, np.zeros(n, dtype=np.float32))
+    return lanes
 
 
-def credit_kills(source, game, moments, limit, duration, report):
-    """Only the best kill moments get the closer look, so this stays seconds rather than minutes."""
-    deaths = {e["round"]: e["from"] for e in game["events"] if e["kind"] == "you_down"}
-    kills = sorted((m for m in moments if m["tags"][0] == "kills" and m.get("round")),
-                   key=lambda m: m["score"], reverse=True)
-    checked = kills[:max(limit * KILL_CHECKS, KILL_CHECKS_MIN)]
-    for i, m in enumerate(checked):
-        report("Checking kills", i / max(len(checked), 1))
-        detect.apply_own_kills(m, hud.own_kills(source, m["first"] - 6, m["last"] + 2), deaths.get(m["round"]))
-        m["start"], m["end"] = detect.frame(m["first"], m["last"], 12, 5, duration)
-    # A kill nobody looked at closely is not known to be the streamer's, so it cannot outrank one that is.
-    return [m for m in moments if m not in kills[len(checked):]]
+def other_view(source):
+    """The game filter for a recording outside this job's stream, found from the recording itself."""
+    try:
+        info = media.probe(source)
+    except (OSError, RuntimeError, ValueError):
+        return "scale=1920:1080"
+    size = (info["width"], info["height"])
+    return view.game_filter(view.find_game_area(source, size, info["duration"])[0], size)
+
+
+def find_taught_kills(library, sid, report=lambda stage, value: None):
+    """Teach a kill: learns from every kill marked for this stream's game, then finds them all in this stream.
+
+    Returns (kills found, clips added, what was learned).
+    """
+    session = library.session(sid)
+    key = games.key_of(session["game"])
+    if not key:
+        raise ValueError("Choose this stream's game in the review desk first.")
+    source = session["source"]
+    info = media.probe(source)
+    _, _, vf = game_view(library, sid, source, info)
+    marked = teach.examples(key)
+    for e in marked:            # kills marked before a stream's game area was known
+        if not e.get("view"):
+            e["view"] = vf if e["source"] == source else other_view(e["source"])
+    here = [e["t"] for e in marked if e["source"] == source]
+    report("Learning your kill", 0.0)
+    pos, after, before, negatives = teach.gather(marked, (source, vf, info["duration"], here),
+                                                 lambda v: report("Learning your kill", v))
+    model, message = teach.learn(pos, after, before, negatives, key)
+    if model is None:
+        raise ValueError(message)
+    teach.save(key, model)
+    lanes = load_lanes(sid)
+    spans = teach.windows(lanes["gun"] if lanes else None, info["duration"])
+    kills = teach.scan(source, vf, model, spans, lambda v: report("Finding every kill", v))
+    moments = detect.fight_moments(kills, lanes, info["duration"], key)
+    added = library.add_kill_clips(sid, moments)
+    make_previews(source, sid, moments, report)
+    seen = json.loads(session["report"] or "{}")
+    seen.update(reader="taught", kills=len(kills), why="")
+    library.update_session(sid, report=json.dumps(seen))
+    return len(kills), added, message
 
 
 def placeholder(pick):
@@ -83,6 +163,7 @@ def caption(model, source, pick, settings, language, game="", refine=True, keep_
     length = pick["end"] - start + WINDOW_PAD
     words, _ = transcribe_window(model, source, start, length, language, bool(settings.get("roman_script")),
                                  task="translate" if mode == "english" else "transcribe", hotwords=GAME_WORDS.get(game))
+    refine = refine and not (pick.get("edit") or {}).get("cuts")       # cuts only fit the clip's own edges
     out = detect.refine_with_words(pick, words) if refine else dict(pick)
     out["words"] = [w for w in words if w["e"] > out["start"] and w["s"] < out["end"]]
     own = pick.get("title") if keep_title else ""
@@ -140,7 +221,15 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     loud = media.loudness_per_second(source, on_progress=lambda v: report("Reading audio", v), total=info["duration"],
                                      tap=tagger.feed if tagger else None)
     lanes = tagger.finish() if tagger else None
-    game = read_game(source, info, report)
+    key = which_game(settings, session)
+    area, layout, vf = game_view(library, sid, source, info)
+    seen = {"layout": layout, "area": list(area), "game": games.name_of(key), "reader": "", "why": ""}
+    game = None
+    if key in ("", "valorant"):
+        game, seen["why"] = read_game(source, info, report, vf)
+        if game:
+            key = "valorant"
+            seen["reader"] = "valorant"
     report("Finding moments", 0.5)
     parts = detect.score_moments(loud, library.chat(sid), library.markers(sid), info["duration"],
                                  lag=session["chat_lag"])
@@ -151,14 +240,26 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     moments = list(picks)
     if lanes:
         moments += detect.laugh_moments(lanes, info["duration"])
+    lesson = teach.load(key) if key and not game else None
     if game:
-        moments += credit_kills(source, game, detect.game_moments(game, lanes, info["duration"]), first,
-                                 info["duration"], report)
+        own, team = credit_kills(source, game, lanes, vf, report)
+        moments += detect.game_moments(game, lanes, info["duration"], own, team, key)
+        kinds = [e["kind"] for e in game["events"]]
+        seen.update(rounds=game["rounds"], kills=len(own), team_kills=kinds.count("enemy_down") - len(own),
+                    deaths=kinds.count("you_down"), clutches=kinds.count("clutch"))
+    elif lesson is not None:
+        spans = teach.windows(lanes["gun"] if lanes else None, info["duration"])
+        kills = teach.scan(source, vf, lesson, spans, lambda v: report("Finding your kills", v))
+        moments += detect.fight_moments(kills, lanes, info["duration"], key)
+        seen.update(reader="taught", kills=len(kills), why="")
+    elif key and key != "valorant":
+        seen["why"] = ("%s is read from a kill notice you teach it once: pause on two of your kills in the review "
+                       "desk and press This frame shows my kill." % games.name_of(key))
     weights = wanted(settings)
     picks = detect.select(moments, first, weights)          # the best, with a mix of kinds: captioned now
     rest = [m for m in detect.select(moments, ALL_MOMENTS, weights)
             if not any(detect.overlaps(m, p) for p in picks)]   # every other moment: captioned in the background
-    library.update_session(sid, chat_lag=parts["lag"], game=game["game"] if game else "")
+    library.update_session(sid, chat_lag=parts["lag"], game=games.name_of(key), report=json.dumps(seen))
     extra = {k: v.astype(np.float16) for k, v in (lanes or {}).items() if k in ("laugh", "gun")}
     np.savez_compressed(signals_file(sid), curve=parts["curve"].astype(np.float16), loud=loud.astype(np.float16),
                         events=json.dumps(game["events"] if game else []), **extra)
@@ -176,7 +277,7 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     done = []
     for i, pick in enumerate(picks):
         report("Writing captions", i / max(len(picks), 1))
-        done.append(caption(model, source, pick, settings, language, game["game"] if game else "")
+        done.append(caption(model, source, pick, settings, language, games.name_of(key))
                     if model is not False else pick)
     done += [dict(m, title=m.get("title") or placeholder(m), captioned=False) for m in rest]
     done.sort(key=lambda p: p["score"], reverse=True)

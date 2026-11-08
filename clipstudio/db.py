@@ -36,7 +36,8 @@ class Library:
         self.con.execute("PRAGMA foreign_keys=ON")
         self.con.executescript(SCHEMA)
         columns = [r["name"] for r in self.con.execute("PRAGMA table_info(sessions)")]
-        for column in ("url", "folder", "game"):    # libraries made by older versions
+        # view: where the game sits in the recording, "x,y,w,h". report: what the game reader saw, as JSON.
+        for column in ("url", "folder", "game", "view", "report"):    # libraries made by older versions
             if column not in columns:
                 self.con.execute("ALTER TABLE sessions ADD COLUMN %s TEXT DEFAULT ''" % column)
         columns = [r["name"] for r in self.con.execute("PRAGMA table_info(clips)")]
@@ -107,12 +108,39 @@ class Library:
                 if any(c["start"] < k["end"] and k["start"] < c["end"] for k in kept):
                     continue
                 rank += 1
-                self.con.execute(
-                    "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events, "
-                    "captioned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (sid, rank, c["start"], c["end"], c["peak"], c["score"], json.dumps(c["reasons"]),
-                     c.get("title", ""), json.dumps(c.get("words", [])), json.dumps(c.get("tags", [])),
-                     json.dumps(c.get("events", [])), "1" if c.get("captioned", True) else "0"))
+                self._insert(sid, rank, c)
+
+    def _insert(self, sid, rank, c):
+        self.con.execute(
+            "INSERT INTO clips(session, rank, start, end, peak, score, reasons, title, words, tags, events, edit, "
+            "captioned) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (sid, rank, c["start"], c["end"], c["peak"], c["score"], json.dumps(c["reasons"]),
+             c.get("title", ""), json.dumps(c.get("words", [])), json.dumps(c.get("tags", [])),
+             json.dumps(c.get("events", [])), json.dumps(c.get("edit") or {}),
+             "1" if c.get("captioned", True) else "0"))
+
+    def add_kill_clips(self, sid, clips):
+        """Adds kill clips found later, by a taught model. Never touches a kept or exported clip.
+
+        A new, untouched clip on the same moment that is not already a kill clip gives way to the kill clip, which
+        inherits its tags and reasons. Returns how many clips were added.
+        """
+        added = 0
+        with self.con:
+            for c in clips:
+                overlapping = [self._clip(r) for r in self.con.execute(
+                    "SELECT * FROM clips WHERE session=? AND start<? AND end>?", (sid, c["end"], c["start"]))]
+                if any("kills" in o["tags"] or o["state"] != "new" or o["edit"] for o in overlapping):
+                    continue
+                for o in overlapping:
+                    c["tags"] = c["tags"] + [t for t in o["tags"] if t not in c["tags"]]
+                    c["reasons"] = c["reasons"] + [r for r in o["reasons"] if r not in c["reasons"]]
+                    self.con.execute("DELETE FROM clips WHERE id=?", (o["id"],))
+                rank = self.con.execute("SELECT COALESCE(MAX(rank), 0) FROM clips WHERE session=?",
+                                        (sid,)).fetchone()[0] + 1
+                self._insert(sid, rank, dict(c, captioned=False))
+                added += 1
+        return added
 
     def clips(self, sid):
         return [self._clip(r) for r in

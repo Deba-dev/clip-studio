@@ -296,11 +296,23 @@ class Crossfade(QWidget):
 
 
 class Button(QPushButton):
+    """The app's button. It glows on hover, sinks when pressed, ripples from where it was clicked, can spin while its
+    job runs (set_busy) and can say it is done (done). Primary buttons get a light sweep on hover."""
+    NUDGE = {"back": -1, "first": -1, "rewind": -1, "stepback": -1}     # icons that point left move left
+
     def __init__(self, text="", icon=None, primary=False, danger=False, flat=False):
         super().__init__(text)
         self.icon_name, self.primary, self.danger, self.flat = icon, primary, danger, flat
         self.hover = 0.0
         self.press = 0.0
+        self.ripple = 1.0           # 0 to 1 while a ripple spreads; 1 means none showing
+        self.ripple_at = QPointF()
+        self.sweep = 1.0            # the primary button's light sweep, 0 to 1
+        self.spin = 0.0
+        self.busy = False
+        self.success = 0.0          # 1 while the button shows its done message
+        self.saved_text = None
+        self.spinner = QTimer(self, interval=16, timeout=self.turn)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFont(font(13, QFont.Weight.DemiBold if primary else QFont.Weight.Medium))
@@ -314,48 +326,116 @@ class Button(QPushButton):
 
     def enterEvent(self, event):
         tween(self, "hover", 1, 160)
+        if self.primary and self.isEnabled():
+            self.sweep = 0.0
+            tween(self, "sweep", 1, 650, QEasingCurve.Type.InOutCubic)
 
     def leaveEvent(self, event):
         tween(self, "hover", 0, 240)
 
     def mousePressEvent(self, event):
+        if self.busy:
+            return
         tween(self, "press", 1, 70)
+        self.ripple_at = event.position()
+        self.ripple = 0.0
+        tween(self, "ripple", 1, 520, QEasingCurve.Type.OutCubic)
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
         tween(self, "press", 0, 220, QEasingCurve.Type.OutBack)
-        super().mouseReleaseEvent(event)
+        if not self.busy:
+            super().mouseReleaseEvent(event)
 
+    # ---- states
+    def turn(self):
+        self.spin = (self.spin + 6) % 360
+        self.update()
+
+    def set_busy(self, on):
+        """A spinner in place of the icon, and no second click, while the button's job runs."""
+        self.busy = on
+        self.setCursor(Qt.CursorShape.BusyCursor if on else Qt.CursorShape.PointingHandCursor)
+        if on and MOTION.on:
+            self.spinner.start()
+        else:
+            self.spinner.stop()
+        self.update()
+
+    def done(self, text="Done", ms=1400):
+        """Shows a check and a short message in green, then goes back to the label it had."""
+        self.set_busy(False)
+        if self.saved_text is None:
+            self.saved_text = (self.text(), self.icon_name)
+        self.setText(text)
+        self.icon_name = "check"
+        tween(self, "success", 1, 180)
+        QTimer.singleShot(ms, self.undone)
+
+    def undone(self):
+        if self.saved_text is None:
+            return
+        self.setText(self.saved_text[0])
+        self.icon_name = self.saved_text[1]
+        self.saved_text = None
+        tween(self, "success", 0, 260)
+
+    # ---- painting
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         on = self.isEnabled()
         inset = 4 + self.press * 1.5
         r = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
-        accent = T.BAD if self.danger else T.A1
+        accent = mix(T.BAD if self.danger else T.A1, T.GOOD, self.success)
         if on and self.hover > 0.01 and not self.flat:
-            glow(p, r, 9, T.A2 if self.primary else accent, self.hover * 1.5, 6)
+            glow(p, r, 9, mix(T.A2 if self.primary else accent, T.GOOD, self.success), self.hover * 1.5, 6)
+        shape = QPainterPath()
+        shape.addRoundedRect(r, 9, 9)
         if self.primary and on:
             g = QLinearGradient(r.topLeft(), r.bottomRight())
-            g.setColorAt(0, mix(T.A1, T.A2, self.hover * .35))
-            g.setColorAt(1, mix(T.A2, T.A1, 1 - self.hover * .7 - .3))
+            g.setColorAt(0, mix(mix(T.A1, T.A2, self.hover * .35), T.GOOD, self.success))
+            g.setColorAt(1, mix(mix(T.A2, T.A1, 1 - self.hover * .7 - .3), QColor("#059669"), self.success))
             p.setBrush(QBrush(g))
             p.setPen(Qt.PenStyle.NoPen)
         elif self.flat:
-            p.setBrush(alpha(T.TEXT, 22 * self.hover))
+            p.setBrush(alpha(mix(T.TEXT, T.GOOD, self.success), 22 * max(self.hover, self.success)))
             p.setPen(Qt.PenStyle.NoPen)
         else:
             p.setBrush(mix(QColor(26, 17, 64, 220), QColor(46, 30, 104, 240), self.hover) if on else QColor(22, 17, 48, 150))
             p.setPen(QPen(alpha(accent, (120 + 100 * self.hover) if on else 40), 1))
-        p.drawRoundedRect(r, 9, 9)
+        p.drawPath(shape)
+        p.save()
+        p.setClipPath(shape)
+        if self.primary and on and 0 < self.sweep < 1:          # a band of light crossing the button
+            x = r.left() - r.width() * .4 + r.width() * 1.8 * self.sweep
+            band = QLinearGradient(QPointF(x - 30, 0), QPointF(x + 30, 0))
+            band.setColorAt(0, alpha(T.TEXT, 0))
+            band.setColorAt(.5, alpha(T.TEXT, 46))
+            band.setColorAt(1, alpha(T.TEXT, 0))
+            p.fillRect(r, QBrush(band))
+        if self.ripple < 1:
+            reach = math.hypot(r.width(), r.height()) * (.15 + self.ripple)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(alpha(T.TEXT, 70 * (1 - self.ripple)))
+            p.drawEllipse(self.ripple_at, reach, reach)
+        p.restore()
         color = T.TEXT if on else T.FAINT
         text = self.text()
         width = self.fontMetrics().horizontalAdvance(text)
         size = 16
-        total = width + (size + (7 if text else 0) if self.icon_name else 0)
+        total = width + (size + (7 if text else 0) if self.icon_name or self.busy else 0)
         x = r.center().x() - total / 2
-        if self.icon_name:
-            draw_icon(p, self.icon_name, QRectF(x, r.center().y() - size / 2, size, size), color)
+        if self.busy:
+            box = QRectF(x + 1.5, r.center().y() - size / 2 + 1.5, size - 3, size - 3)
+            p.setPen(QPen(alpha(color, 60), 2))
+            p.drawEllipse(box)
+            p.setPen(QPen(color, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawArc(box, int(-self.spin * 16), 100 * 16)
+            x += size + 7
+        elif self.icon_name:
+            nudge = self.hover * 2 * self.NUDGE.get(self.icon_name, 1) if text else 0
+            draw_icon(p, self.icon_name, QRectF(x + nudge, r.center().y() - size / 2, size, size), color)
             x += size + 7
         p.setPen(color)
         p.setFont(self.font())
@@ -392,7 +472,9 @@ class Toggle(QCheckBox):
         self.setChecked(checked)
         self.knob = 1.0 if checked else 0.0
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggled.connect(lambda on: tween(self, "knob", 1 if on else 0, 200, QEasingCurve.Type.OutBack))
+        # Only a switch you can see slides; one set while hidden is simply in place when it appears.
+        self.toggled.connect(lambda on: tween(self, "knob", 1 if on else 0, 200 if self.isVisible() else 0,
+                                              QEasingCurve.Type.OutBack))
 
     def sizeHint(self):
         return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 58, 28)

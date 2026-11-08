@@ -2,16 +2,21 @@
 
 Stream normally. When OBS stops recording, Clip Studio builds a ranked shortlist of your best moments on your own PC. You can also paste the link to a finished YouTube, Twitch or Kick stream. You review the shortlist, fix a trim or a word, and export 9:16 clips with captions.
 
-The market research behind these decisions is in [reports/Stream clipping tools and gaps.md](reports/Stream%20clipping%20tools%20and%20gaps.md).
+The market research behind these decisions is in [reports/Stream clipping tools and gaps.md](reports/Stream%20clipping%20tools%20and%20gaps.md) and [reports/Clipping apps - how they work and features.md](reports/Clipping%20apps%20-%20how%20they%20work%20and%20features.md). Every feature, with a way to check it, is listed in [FEATURES.md](FEATURES.md).
 
 ## How it works
 
 1. **During the stream:** only light logging runs. The app records chat and your moment markers (F9, or saving an OBS replay). Nothing touches the GPU.
 2. **After the stream:** analysis waits until the stream has ended, then runs in a low-priority background process.
    - Pass 1 reads the audio once for loudness and for sounds: laughter, gunfire and shouting.
-   - Pass 2 reads the keyframes for the game's own HUD. In Valorant that gives kills, your deaths, clutches and which parts are menus. Other games use sound, speech and chat.
+   - Pass 2 finds the game picture inside the recording first, so a vertical stream (webcam stacked over a cropped game) reads like a plain one. It then reads the keyframes for the game's own HUD. In Valorant that gives every kill, your deaths, clutches and which parts are menus, and each kill is checked for being yours. Kills are grouped per round into Kill, Double, Triple, Quadra and Ace clips, with the quiet walking between kills cut out, and every death becomes a clip too.
+   - Ten games are known: Valorant, Counter-Strike 2, BGMI, PUBG: Battlegrounds, Free Fire, Call of Duty: Mobile, Call of Duty: Warzone, Fortnite, Apex Legends and Overwatch 2. Valorant is read from its HUD. The others learn your kill notice once (**Teach a kill**: pause on two of your kills and press *This frame shows my kill*), and every later stream of that game is read with it.
+   - The review desk says what the game reader saw on each stream, or why it found no kills.
    - Pass 3 runs speech recognition only on the shortlisted clips, which keeps it fast without a GPU.
-3. **Review desk:** each clip says why it was picked and carries a tag: Funny, Kill, Death or Hype. A live phone preview shows the real layout, captions and loudness. Cut, split, trim, mute, fade and change caption style, with undo and redo on all of it.
+3. **Review desk:** each clip says why it was picked and carries a tag: Funny, Kill, Death or Hype. A live phone preview shows the real layout, captions and loudness. Cut, split, trim, mute, fade and change caption style, with undo and redo on all of it. Search finds any word said in any clip, in Hindi or Roman letters.
+   - **Punch-in zoom:** the picture snaps in on the game at the second of each kill or death, and on your webcam when you laugh. The times come from the HUD and the sound model, not guessed from the transcript.
+   - **Hook:** big text over the first 2.6 seconds, typed or suggested from the clip's title ideas.
+   - **Kill counter:** KILL, DOUBLE KILL, TRIPLE KILL pops up at the frame each kill lands, named the way the game names it.
 4. **Export:** clips render at 720p, 1080p or 1440p, at the stream's frame rate up to 60 fps, and at -14 LUFS, the level phones play at, with a hardware encoder when one works. Low-quality streams can be cleaned up and sharpened, or AI upscaled on the graphics card.
 
 ## Editing keys
@@ -58,7 +63,11 @@ The first analysis downloads the speech model, about 1.6 GB for the default size
 | `clipstudio/detect.py` | Scores moments, learns chat delay, sets clip edges |
 | `clipstudio/sound.py` | Laughter, gunfire and shouting from the audio |
 | `clipstudio/hud.py` | Reads kills and deaths from Valorant's HUD |
+| `clipstudio/view.py` | Finds the game picture inside vertical and boxed layouts |
+| `clipstudio/games.py` | The ten games: names, title matching, multi-kill names, the reader's report |
+| `clipstudio/teach.py` | Teach a kill: learns any game's kill notice from marked examples, then finds every kill |
 | `clipstudio/edit.py` | Cuts, mutes and loudness targets, shared by preview and export |
+| `clipstudio/effects.py` | Punch-in zooms placed on kills, deaths and laughs, the hook text and the kill counter |
 | `clipstudio/analyze.py` | The post-stream pipeline |
 | `clipstudio/transcribe.py` | faster-whisper with word timings |
 | `clipstudio/roman.py` | Devanagari to Roman captions |
@@ -68,7 +77,7 @@ The first analysis downloads the speech model, about 1.6 GB for the default size
 | `clipstudio/chat.py` | Twitch, Kick and YouTube chat logging, chat file import |
 | `clipstudio/worker.py` | The separate background process |
 | `clipstudio/fetch.py` | Downloads past streams and YouTube chat replay |
-| `clipstudio/insights.py` | Virality score, title ideas and hashtags |
+| `clipstudio/insights.py` | Virality score, title ideas, hashtags and transcript search |
 | `clipstudio/account.py`, `plans.py` | Sign-in, Premium, and the free plan's caps |
 | `clipstudio/ui/premium.py`, `ui/recent.py` | Premium screens, recent-streams picker |
 | (payments) | Sign-in, Premium and gift keys come from ZunimiLabs Pay, a separate project shared by every ZunimiLabs app |

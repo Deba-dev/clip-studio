@@ -232,6 +232,7 @@ def test_a_laugh_becomes_a_funny_clip_with_its_setup():
 
 
 def test_a_triple_kill_beats_a_loud_nothing():
+    """With no closer look possible, every enemy that went down counts."""
     s = lanes()
     s["gun"][300] = s["gun"][306] = s["gun"][311] = .9
     game = {"events": [{"t": t + 2, "from": t - 2, "kind": "enemy_down", "round": 1} for t in (300, 306, 311)]}
@@ -242,28 +243,74 @@ def test_a_triple_kill_beats_a_loud_nothing():
     assert detect.select(m + [loud], 1)[0]["title"] == "Triple kill"
 
 
-def test_a_death_with_no_reaction_is_not_a_clip():
+def test_every_death_is_a_clip_and_a_laughed_at_one_ranks_higher():
     game = {"events": [{"t": 100.0, "from": 95.0, "kind": "you_down", "round": 1}]}
-    assert detect.game_moments(game, lanes(), 2000) == []
+    quiet = detect.game_moments(game, lanes(), 2000)
+    assert len(quiet) == 1 and quiet[0]["title"] == "Death" and quiet[0]["tags"] == ["deaths"]
     s = lanes()
     s["laugh"][102] = .5
     m = detect.game_moments(game, s, 2000)
-    assert m and set(m[0]["tags"]) == {"deaths", "funny"}
+    assert set(m[0]["tags"]) == {"deaths", "funny"} and m[0]["score"] > quiet[0]["score"]
 
 
 def test_skull_seen_after_dying_belongs_to_a_teammate():
-    game = {"events": [{"t": 100.0, "from": 95.0, "kind": "enemy_down", "round": 1}]}
-    m = detect.game_moments(game, None, 2000)[0]
-    before = m["score"]
-    detect.apply_own_kills(m, own=[98.0], dead=60.0)       # died long before: this was spectating
-    assert m["title"] == "Team fight" and m["score"] < before
+    assert detect.mine([90.0, 98.0], dead=95.0) == [90.0]
+    assert detect.mine([90.0, 98.0]) == [90.0, 98.0]
 
 
-def test_your_own_kill_is_credited():
-    game = {"events": [{"t": 100.0, "from": 95.0, "kind": "enemy_down", "round": 1}]}
-    m = detect.game_moments(game, None, 2000)[0]
-    detect.apply_own_kills(m, own=[97.0, 99.0])
-    assert m["title"] == "Double kill" and m["reasons"][0] == "You got 2 kills"
+def test_kills_in_one_round_are_one_clip_named_for_the_count():
+    game = {"events": [{"t": t + 2, "from": t - 2, "kind": "enemy_down", "round": 3} for t in (300, 306, 311, 318)]}
+    own = [(300.0, 3), (306.0, 3), (311.0, 3), (318.0, 3)]
+    m = detect.game_moments(game, None, 2000, own=own)
+    assert len(m) == 1 and m[0]["title"] == "Quadra kill" and m[0]["reasons"][0] == "You got 4 kills in round 3"
+    assert [e["t"] for e in m[0]["events"]] == [300.0, 306.0, 311.0, 318.0]
+
+
+def test_a_slow_ace_keeps_every_kill_and_cuts_the_walking_between():
+    kills = [100.0, 131.0, 160.0, 171.0, 210.0]
+    m = detect.multi_kill(kills, None, 2000, "valorant", round_no=7)
+    c = {"start": m["start"], "end": m["end"], "edit": m["edit"]}
+    keep = edit.keep_ranges(c)
+    assert m["title"] == "Ace" and edit.length(c) <= detect.LONGEST
+    assert all(any(a <= k <= b for a, b in keep) for k in kills)        # no kill is cut away
+    assert any("quiet parts" in r for r in m["reasons"])
+
+
+def test_a_quick_double_kill_needs_no_cuts():
+    m = detect.multi_kill([100.0, 104.0], None, 2000)
+    assert "edit" not in m and m["title"] == "Double kill"
+
+
+def test_a_clutch_joins_the_kills_of_its_round():
+    game = {"events": [{"t": 302.0, "from": 298.0, "kind": "enemy_down", "round": 5},
+                       {"t": 309.0, "from": 305.0, "kind": "enemy_down", "round": 5},
+                       {"t": 320.0, "from": 320.0, "kind": "clutch", "round": 5, "against": 2}]}
+    m = detect.game_moments(game, None, 2000, own=[(300.0, 5), (307.0, 5)])
+    assert len(m) == 1 and m[0]["title"] == "1v2 clutch, double kill"
+    assert {e["kind"] for e in m[0]["events"]} == {"kill", "clutch"}
+
+
+def test_a_teammates_kill_is_a_clip_only_when_you_reacted():
+    burst = [{"t": 302.0, "from": 298.0, "at": 300.0, "kind": "enemy_down", "round": 1}]
+    game = {"events": burst}
+    assert detect.game_moments(game, lanes(), 2000, own=[], team=[burst]) == []
+    s = lanes()
+    s["laugh"][303] = .6
+    assert detect.game_moments(game, s, 2000, own=[], team=[burst])[0]["title"] == "Team fight"
+
+
+def test_games_without_rounds_group_kills_into_fights():
+    m = detect.fight_moments([100.0, 110.0, 118.0, 400.0], None, 2000, "bgmi")
+    assert [x["title"] for x in m] == ["Triple kill", "Kill"]
+    assert detect.fight_moments([1.0, 2.0, 3.0, 4.0], None, 100, "bgmi")[0]["title"] == "Squad wipe"
+
+
+def test_a_cut_multi_kill_keeps_its_shape_when_a_hotkey_lands_on_it():
+    ace = detect.multi_kill([100.0, 131.0, 160.0, 171.0, 210.0], None, 2000)
+    hotkey = {"peak": 205.0, "score": 100.0, "start": 180.0, "end": 215.0, "tags": ["marked"], "reasons": ["F9"]}
+    out = detect.select([ace, hotkey], 5)
+    assert len(out) == 1 and out[0]["edit"] == ace["edit"] and out[0]["start"] == ace["start"]
+    assert "F9" in out[0]["reasons"]
 
 
 def test_a_kind_set_to_zero_never_appears():
