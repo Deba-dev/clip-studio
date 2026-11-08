@@ -1,6 +1,6 @@
 # Clip Studio feature list
 
-Every feature in the app, with what it does. **New** marks what version 0.7.0 added. Each new feature has a quick way to check it. ★ marks features no other clipping app was found to offer in [the research](reports/Clipping%20apps%20-%20how%20they%20work%20and%20features.md).
+Every feature in the app, with what it does. **New** marks what version 0.7.1 added. Each new feature has a quick way to check it. ★ marks features no other clipping app was found to offer in [the research](reports/Clipping%20apps%20-%20how%20they%20work%20and%20features.md).
 
 ## Finding clips
 

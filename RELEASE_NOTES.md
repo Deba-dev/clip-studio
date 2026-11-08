@@ -1,4 +1,4 @@
-Clip Studio 0.7.0 finds your kills in vertical streams, makes a clip of every kill round and every death, learns any of ten games, and adds zooms, hooks and a kill counter to your clips.
+Clip Studio 0.7.1 finds your kills in vertical streams, makes a clip of every kill round and every death, learns any of ten games, and adds zooms, hooks and a kill counter to your clips.
 
 ## New in this version
 

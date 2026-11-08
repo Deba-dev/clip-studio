@@ -890,7 +890,7 @@ class ReviewPage(QWidget):
         self.duration = session["duration"] or 1.0
         try:
             self.size_info = media.probe(source)
-        except RuntimeError:
+        except (RuntimeError, OSError):     # an unreadable file, or no FFmpeg to read it with
             self.size_info = None
         self.phone.source_size = (self.size_info["width"], self.size_info["height"]) if self.size_info else None
         split = source.endswith(".ffconcat")
