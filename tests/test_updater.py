@@ -122,3 +122,36 @@ def test_an_unfinished_update_is_reported_and_old_installers_removed(window, tmp
     assert "did not finish" in window.updater.after_start()
     assert not old.exists() and window.settings.get("update_pending") == ""
     assert window.updater.after_start() == ""
+
+
+def test_a_failing_download_link_falls_back_to_the_api(tmp_path, monkeypatch):
+    import hashlib
+    import io
+    import urllib.error
+    monkeypatch.setattr(updater.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater, "RETRY_WAIT", 0)
+    body = b"installer"
+    seen = []
+
+    class Response(io.BytesIO):
+        headers = {"Content-Length": str(len(body))}
+
+    def urlopen(request, timeout):
+        seen.append((request.full_url, request.get_header("Accept")))
+        if "api.github.com" not in request.full_url:
+            raise urllib.error.HTTPError(request.full_url, 504, "Gateway Time-out", {}, None)
+        return Response(body)
+
+    monkeypatch.setattr(updater.urllib.request, "urlopen", urlopen)
+    api = updater.API_ASSET + "726576673"
+    path = updater.download({"version": "9.0.0", "asset": BASE + "v9.0.0/ClipStudio-Setup.exe", "api_asset": api,
+                             "digest": "sha256:" + hashlib.sha256(body).hexdigest()})
+    assert open(path, "rb").read() == body
+    assert [u for u, _ in seen].count(api) == 1 and len(seen) == updater.TRIES + 1
+    assert seen[-1][1] == "application/octet-stream"
+
+
+def test_only_this_repos_api_asset_is_used():
+    assert updater.is_api_asset(updater.API_ASSET + "123")
+    assert not updater.is_api_asset("https://api.github.com/repos/someone/x/releases/assets/123")
+    assert not updater.is_api_asset(updater.API_ASSET + "123/../../evil")

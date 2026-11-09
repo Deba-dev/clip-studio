@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -22,6 +24,9 @@ from .version import VERSION
 REPO = "Deba-dev/clip-studio"
 API = "https://api.github.com/repos/%s/releases?per_page=20" % REPO
 AGENT = "ClipStudio-updater"
+API_ASSET = "https://api.github.com/repos/%s/releases/assets/" % REPO
+TRIES = 2               # per link: GitHub's download links sometimes answer 502/503/504 for a while
+RETRY_WAIT = 3
 
 
 def parse_version(text):
@@ -38,6 +43,11 @@ def is_release_asset(url):
     return (parsed.scheme == "https" and parsed.hostname == "github.com" and parsed.username is None
             and parsed.password is None and path.casefold().startswith(("/%s/releases/download/" % REPO).casefold())
             and all(part not in (".", "..") for part in path.split("/")))
+
+
+def is_api_asset(url):
+    """The same release file through GitHub's API, used when the normal download link is failing."""
+    return bool(re.fullmatch(re.escape(API_ASSET) + r"\d+", url or "", re.I))
 
 
 def summary(notes):
@@ -62,6 +72,7 @@ def pick_release(releases, current=VERSION):
         if asset and is_release_asset(asset.get("browser_download_url")):
             best = {"version": release["tag_name"].lstrip("vV"), "page": release.get("html_url", ""),
                     "asset": asset["browser_download_url"], "digest": asset.get("digest") or "",
+                    "api_asset": asset.get("url") if is_api_asset(asset.get("url")) else "",
                     "notes": summary(release.get("body"))}
     return best
 
@@ -89,19 +100,44 @@ def download(info, on_progress=lambda value: None):
     if not is_release_asset(info.get("asset")):
         raise ValueError("That update did not come from Clip Studio's releases, so it was not downloaded.")
     path = installer_path(info["version"])
-    request = urllib.request.Request(info["asset"], headers={"User-Agent": AGENT})
-    sha, done = hashlib.sha256(), 0
-    with urllib.request.urlopen(request, timeout=30) as response, open(path, "wb") as f:
-        total = int(response.headers.get("Content-Length") or 0)
-        while True:
-            chunk = response.read(1 << 16)
-            if not chunk:
-                break
-            f.write(chunk)
-            sha.update(chunk)
-            done += len(chunk)
-            if total:
-                on_progress(done / total)
+    links = [(info["asset"], {})]
+    if is_api_asset(info.get("api_asset")):
+        links.append((info["api_asset"], {"Accept": "application/octet-stream"}))
+    error = None
+    for url, headers in links:
+        for attempt in range(TRIES):
+            try:
+                return fetch(url, headers, path, info, on_progress)
+            except ValueError:
+                raise
+            except Exception as e:      # a server error, a timeout or a dropped connection: try again, then the next link
+                error = e
+                if isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429:
+                    break
+                if attempt + 1 < TRIES:
+                    time.sleep(RETRY_WAIT)
+    raise error
+
+
+def fetch(url, headers, path, info, on_progress):
+    request = urllib.request.Request(url, headers={"User-Agent": AGENT, **headers})
+    sha, done, total = hashlib.sha256(), 0, 0
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response, open(path, "wb") as f:
+            total = int(response.headers.get("Content-Length") or 0)
+            while True:
+                chunk = response.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                sha.update(chunk)
+                done += len(chunk)
+                if total:
+                    on_progress(done / total)
+    except Exception:
+        if os.path.exists(path):
+            os.remove(path)
+        raise
     want = (info.get("digest") or "").lower()
     if (total and done != total) or (want.startswith("sha256:") and want[7:] != sha.hexdigest()):
         os.remove(path)
@@ -157,7 +193,10 @@ class Updater(QObject):
         except ValueError as e:
             self._event.emit("failed", str(e))
         except Exception as e:
-            self._event.emit("failed", "The update download failed (%s)" % str(e)[:60])
+            busy = isinstance(e, urllib.error.HTTPError) and e.code >= 500
+            self._event.emit("failed", "GitHub's download server is not answering right now (%s). Try the update "
+                                       "again in a little while." % str(e)[:40] if busy else
+                             "The update download failed (%s)" % str(e)[:60])
         finally:
             self._event.emit("idle", None)
 
