@@ -22,7 +22,7 @@ from .. import captions as caps
 from .. import insights
 from ..captions import apply_text
 from ..paths import clip_thumb, signals_file
-from ..render import resolve
+from ..render import resolve, stacking_cam
 from ..worker import parse_facecam
 from . import theme as T
 from .audio import PreviewAudio
@@ -1032,7 +1032,10 @@ class ReviewPage(QWidget):
         self.player.play()
 
     def facecam(self):
-        return parse_facecam(self.library.session(self.sid)["facecam"])
+        """The webcam box the layouts use: none for a vertical recording, which is shown whole (render.stacking_cam)."""
+        size = (self.size_info["width"], self.size_info["height"]) if self.size_info else None
+        cam = parse_facecam(self.library.session(self.sid)["facecam"])
+        return stacking_cam(cam, size) if size else cam
 
     def show_clip(self):
         c = self.clip

@@ -281,8 +281,8 @@ def game_moments(game, lanes, duration, own=None, team=(), key="valorant"):
     """The game's events as clips: one per round with the streamer's kills, every clutch, every death.
 
     own: [(time, round)] of the streamer's own kills, from the skull banner. None means nothing could be checked,
-    so every enemy that went down counts. team: bursts nobody credited to the streamer; they become a clip only when
-    the streamer reacted, since a teammate's kill is not your highlight.
+    so every enemy that went down counts. team: bursts nobody credited to the streamer; they become a clip while the
+    streamer was alive (it may be a kill whose banner was hidden) or when the streamer reacted, ranked low.
     """
     events = located(game, lanes)
     if own is None:
@@ -297,13 +297,19 @@ def game_moments(game, lanes, duration, own=None, team=(), key="valorant"):
            for r, kills in sorted(by_round.items())]
     out += [multi_kill([], lanes, duration, key, r, c, deaths) for r, c in clutches.items() if r not in by_round]
     out += [death_moment(t, lanes, duration) for t in deaths]
+    dead_at = {e["round"]: e["at"] for e in events if e["kind"] == "you_down"}
     for burst in team:
         last = burst[-1]["at"]
         bonus, laughed, _ = reaction(lanes, last)
-        if bonus >= .5:
-            out.append(moment(burst[0]["at"], last, last, 2.0 + bonus, 12, 5, duration,
-                              ["hype"] + (["funny"] if laughed else []), ["Your team got the kill", "You reacted"],
-                              "Team fight", [{"t": float(e["at"]), "kind": "kill"} for e in burst]))
+        alive = burst[0]["round"] not in dead_at or burst[0]["at"] < dead_at[burst[0]["round"]]
+        if not alive and bonus < .5:
+            continue            # a teammate's kill while you spectate is only a clip if you reacted
+        # The kill banner can hide behind smoke, an ability or an agent walking past, so a fight while you were alive
+        # is kept even when no banner was read: you decide in the review desk whether it was yours.
+        reasons = ["Your team got the kill" if not alive else "An enemy went down while you were alive"]
+        out.append(moment(burst[0]["at"], last, last, 1.0 + .3 * len(burst) + bonus, 12, 5, duration,
+                          ["hype"] + (["funny"] if laughed else []), reasons + (["You reacted"] if bonus >= .5 else []),
+                          "Team fight" if len(burst) > 1 else "Fight", [{"t": float(e["at"]), "kind": "kill"} for e in burst]))
     return out
 
 

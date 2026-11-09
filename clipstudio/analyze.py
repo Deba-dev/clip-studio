@@ -9,12 +9,13 @@
    is saved as a clip too, and a separate background job captions those one by one afterwards.
 """
 import json
+import os
 import shutil
 
 import numpy as np
 
 from . import detect, games, hud, media, teach, view
-from .paths import clip_thumb, session_thumb, signals_file
+from .paths import clip_thumb, session_thumb, signals_file, words_file
 from .settings import Settings
 
 WINDOW_PAD = 10         # extra audio around a candidate, so the transcript can find where the thought began
@@ -42,7 +43,9 @@ def make_tagger(duration):
 
 
 def game_view(library, sid, source, info):
-    """Where the game is in this recording, found once and remembered. Returns (area, layout, ffmpeg filter)."""
+    """Where the game is in this recording, found once and remembered. Returns (area, layout, ffmpeg filter).
+
+    view.stride(area, size) says how blurry that picture is once enlarged, for the HUD reader."""
     size = (info["width"], info["height"])
     session = library.session(sid)
     area = view.parse(session["view"])
@@ -58,10 +61,12 @@ def which_game(settings, session):
     return games.key_of(session["game"]) or games.key_of(settings.get("game")) or games.guess(session["name"])
 
 
-def read_game(source, info, report, vf="scale=1920:1080"):
-    """Valorant's HUD through the game picture. Returns (game or None, a sentence on what was seen)."""
+def read_game(source, info, report, vf="scale=1920:1080", k=1):
+    """Valorant's HUD through the game picture. Returns (game or None, a sentence on what was seen).
+
+    k: view.stride, so a 360p or 720p download is read as well as a 1080p recording."""
     try:
-        times, slots, strips = hud.scan(source, info["duration"], lambda v: report("Reading the game", v), vf)
+        times, slots, strips = hud.scan(source, info["duration"], lambda v: report("Reading the game", v), vf, k)
     except (OSError, ValueError, RuntimeError) as e:
         return None, "The video could not be read for the game: %s" % str(e)[:80]
     game = hud.read_game(times, slots, strips)
@@ -73,15 +78,29 @@ def credit_kills(source, game, lanes, vf, report):
     events = detect.located(game, lanes)
     deaths = {e["round"]: e["from"] for e in events if e["kind"] == "you_down"}
     groups = detect.bursts(events)
+
+    def look(burst):
+        # The banner shows somewhere between the keyframe before the drop and the one after it. Streams cut with
+        # sparse keyframes (YouTube downloads: one every 5 s) need the whole gap, not a fixed few seconds.
+        start = min(min(e["from"] for e in burst), burst[0]["at"]) - 1.5
+        return hud.own_kills(source, start, max(burst[-1]["t"], burst[-1]["at"]) + 2.5, vf)
+
     own, team = [], []
-    for i, burst in enumerate(groups):
+    for i, (burst, seen) in enumerate(zip(groups, parallel(look, groups))):
         report("Checking kills", i / max(len(groups), 1))
-        seen = hud.own_kills(source, burst[0]["at"] - 6, burst[-1]["at"] + 2, vf)
         times = detect.mine(seen, deaths.get(burst[0]["round"]))
         own += [(t, burst[0]["round"]) for t in times]
         if not times:
             team.append(burst)
     return own, team
+
+
+def parallel(fn, items):
+    """fn over items, a few at a time and in order. Each call mostly waits on its own FFmpeg process, so a few run
+    side by side; more would only fight the rest of the PC for the CPU."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(min((os.cpu_count() or 4) // 3, 4), 1)) as pool:
+        yield from pool.map(fn, items)
 
 
 def load_lanes(sid):
@@ -151,18 +170,20 @@ def placeholder(pick):
             "marked": "Marked moment"}.get((pick.get("tags") or ["hype"])[0], "Hype moment")
 
 
-def caption(model, source, pick, settings, language, game="", refine=True, keep_title=True):
+def caption(model, source, pick, settings, language, game="", refine=True, keep_title=True, sid=None):
     """Speech recognition for one clip. refine=False keeps the clip's edges, for clips the user already changed.
 
     A title from the game (Kill, Death reaction) or from the user stays; otherwise the words spoken at the peak become
     the title.
     """
-    from .transcribe import GAME_WORDS, transcribe_window
+    from .transcribe import game_hint, transcribe_window, transcript_for
     mode = settings.get("caption_mode")
     start = max(pick["start"] - WINDOW_PAD, 0.0)
     length = pick["end"] - start + WINDOW_PAD
-    words, _ = transcribe_window(model, source, start, length, language, bool(settings.get("roman_script")),
-                                 task="translate" if mode == "english" else "transcribe", hotwords=GAME_WORDS.get(game))
+    roman, task = bool(settings.get("roman_script")), "translate" if mode == "english" else "transcribe"
+    # With the stream known, speech another clip already needed is reused instead of recognised again.
+    read = transcript_for(sid, model, language, roman, task).get if sid is not None else transcribe_window
+    words, _ = read(model, source, start, length, language, roman, task=task, hotwords=game_hint(game, language, mode))
     refine = refine and not (pick.get("edit") or {}).get("cuts")       # cuts only fit the clip's own edges
     out = detect.refine_with_words(pick, words) if refine else dict(pick)
     out["words"] = [w for w in words if w["e"] > out["start"] and w["s"] < out["end"]]
@@ -179,7 +200,7 @@ def caption_stored(library, sid, cid, model, settings):
     # The placeholder only stood in for a transcript; a game title (Kill) or one the user typed is kept.
     keep = clip["title"] != placeholder(clip) or (clip["tags"] or [""])[0] in ("kills", "deaths")
     done = caption(model, session["source"], clip, settings, session["language"] or settings.get("language") or None,
-                   session["game"], refine=untouched, keep_title=keep)
+                   session["game"], refine=untouched, keep_title=keep, sid=sid)
     fields = {"words": done["words"], "title": done["title"], "captioned": "1"}
     if untouched:
         fields.update(start=done["start"], end=done["end"], score=done["score"], reasons=json.dumps(done["reasons"]))
@@ -213,6 +234,10 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     session = library.session(sid)
     source = session["source"]
     library.update_session(sid, status="analyzing", error="")
+    try:
+        os.remove(words_file(sid))      # a new analysis may use other settings: speech is read fresh
+    except OSError:
+        pass
     info = media.probe(source)
     library.update_session(sid, duration=info["duration"])
 
@@ -226,7 +251,7 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     seen = {"layout": layout, "area": list(area), "game": games.name_of(key), "reader": "", "why": ""}
     game = None
     if key in ("", "valorant"):
-        game, seen["why"] = read_game(source, info, report, vf)
+        game, seen["why"] = read_game(source, info, report, vf, view.stride(area, (info["width"], info["height"])))
         if game:
             key = "valorant"
             seen["reader"] = "valorant"
@@ -247,6 +272,12 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
         kinds = [e["kind"] for e in game["events"]]
         seen.update(rounds=game["rounds"], kills=len(own), team_kills=kinds.count("enemy_down") - len(own),
                     deaths=kinds.count("you_down"), clutches=kinds.count("clutch"))
+    elif key == "valorant":
+        # The top bar is out of the picture, but the kill banner is in the middle of every layout.
+        spans = teach.windows(lanes["gun"] if lanes else None, info["duration"])
+        kills = hud.banner_kills(source, spans, vf, lambda v: report("Finding your kills", v))
+        moments += detect.fight_moments(kills, lanes, info["duration"], key)
+        seen.update(reader="banner", kills=len(kills))
     elif lesson is not None:
         spans = teach.windows(lanes["gun"] if lanes else None, info["duration"])
         kills = teach.scan(source, vf, lesson, spans, lambda v: report("Finding your kills", v))
@@ -277,7 +308,7 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     done = []
     for i, pick in enumerate(picks):
         report("Writing captions", i / max(len(picks), 1))
-        done.append(caption(model, source, pick, settings, language, games.name_of(key))
+        done.append(caption(model, source, pick, settings, language, games.name_of(key), sid=sid)
                     if model is not False else pick)
     done += [dict(m, title=m.get("title") or placeholder(m), captioned=False) for m in rest]
     done.sort(key=lambda p: p["score"], reverse=True)

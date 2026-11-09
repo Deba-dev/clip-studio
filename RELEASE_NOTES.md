@@ -1,21 +1,22 @@
-Clip Studio 0.7.3 keeps updates working when GitHub's download link is down, and includes everything from 0.7.2: a clear "Analysis complete", settings for all clips at once, and removing a stream or clip deletes its files.
+Clip Studio 0.7.4 finds far more of your kills, writes captions in the Hinglish you actually speak, and works with every stream layout. It includes everything from 0.7.3.
 
 ## New in this version
 
-- **Updates get through when GitHub is struggling:** if GitHub's normal download link fails (as it did on 9 November with "HTTP Error 504"), the update retries and then downloads the same installer through GitHub's other route. It is still checked against its fingerprint before it runs. If GitHub is fully down, the message now says so and asks you to try again later.
+- **Kills with any weapon skin:** skins replace the white skull with their own kill banner (an eye, a crest, an X diamond...). These kills used to count as your teammate's. Clip Studio now recognises any kill banner. On a real 3-hour stream, kills found went from 15 to 29.
+- **Low-quality and downloaded streams:** a 360p or 720p download from YouTube used to show no players in Valorant's top bar, so no kills were found at all. It is now read as well as a 1080p recording.
+- **No kill is lost:** a fight where an enemy went down while you were alive becomes a clip even when the kill banner was hidden by smoke or an ability. It ranks below your own kills, and you decide what to keep.
+- **Captions in Hinglish, not English:** captions were often translated into English ("The fiend has hit, brother") or missing during fights. They now follow what you say ("dushman ko lag gaya bhai"), and Hindi words are spelled the way people type them ("dekhta", "isko").
+- **Faster captions:** speech is recognised once per stream, so overlapping clips no longer read the same audio again. Your kills are also checked several at a time.
+- **Every layout:** horizontal or vertical, with or without a webcam. A vertical stream with no webcam band hides Valorant's top bar, so kills are read from the kill banner alone. A vertical recording is exported whole, so your face no longer shows twice.
 
-From 0.7.2:
+From 0.7.3 and 0.7.2:
 
-- **"Analysis complete":** when a stream is done, the progress panel ticks every step and says how many clips are ready, then slides away. Before, the captions written in the background afterwards made the panel jump back to the start, so it looked like the analysis was running again.
-- **Settings for all clips:** a new **This clip / All clips** switch in the review desk. With All clips on, sound (volume, loudness, fades), caption style, layout, crop position, zoom and the kill counter change on every clip of the stream at once, and one undo takes it back. Cuts, length, name, hook and caption words stay per clip.
-- **Removing deletes the files:** removing a stream from the list now also deletes its recording and its exported clips, and removing a clip (the new bin button next to Export) deletes its exported video. They go to the Recycle Bin, and the app asks first and says what will go. A recording another stream in the list still uses is kept.
+- **Updates get through when GitHub is struggling:** a failed download retries, then uses GitHub's other route.
+- **"Analysis complete"**, a **This clip / All clips** switch for settings, and removing a stream or clip deletes its files (to the Recycle Bin, after asking).
 
 From 0.7.1:
 
-- **Kills in vertical streams:** if you stream with your webcam stacked over the game, Clip Studio finds the game picture inside the layout and reads it.
-- **Every kill round and every death is a clip**, named Kill, Double kill, Triple kill, Quadra kill or Ace, with won 1vN clutches joined in.
-- **Ten games**, with **Teach a kill** for every game other than Valorant.
-- **Punch-in zoom, hook text and a kill counter** on your clips, and **search what was said** across all clips.
+- **Kills in vertical streams**, **every kill round and every death is a clip**, **ten games** with **Teach a kill**, and **punch-in zoom, hook text and a kill counter**.
 
 ## Install
 

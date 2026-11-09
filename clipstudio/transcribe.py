@@ -1,15 +1,20 @@
 """Speech to word timings with faster-whisper. Runs after the stream, in the worker process only."""
 import ctypes
+import json
 import os
 import re
 import shutil
 from collections import Counter
 
+import numpy as np
+
 from .media import audio_window
 from .paths import data_dir
 from .roman import to_roman
 
-HALLUCINATIONS = re.compile(r"(thanks? for watching|subscribe|subtitles? by|amara\.org)", re.I)
+# Romanised and Devanagari "subscribe" too: on a Hindi stream it came out as "sabsakvaib".
+HALLUCINATIONS = re.compile(r"(thanks? for watching|subscribe|subtitles? by|amara\.org|s[au]bs\w{0,3}(kr|kv|cr)\w*b|"
+                            r"सब्?स्?क्?राइब|सबसक)", re.I)
 # On noisy game audio Whisper can drift into a script nobody spoke, such as Telugu or Chinese in the middle of Hindi.
 SCRIPTS = {"hi": "ऀ-ॿ", "mr": "ऀ-ॿ", "ne": "ऀ-ॿ", "bn": "ঀ-৿",
            "as": "ঀ-৿", "ta": "஀-௿", "te": "ఀ-౿", "en": ""}
@@ -24,6 +29,15 @@ UNSURE = -1.0           # ...and this unsure of the words, together, means nobod
 REPEATING = 2.4         # compression ratio above this is the same words looping
 GAME_WORDS = {"Valorant": "Valorant, Jett, Reyna, Sage, Omen, Phoenix, Raze, Sova, Killjoy, Cypher, Viper, spike, "
                           "defuse, plant, clutch, ace, headshot, one tap, Vandal, Phantom, Operator, rotate, push"}
+
+
+def game_hint(game, language, mode="spoken"):
+    """Game words help Whisper spell agent names, but only in English: on a real Hindi stream the English word list
+    made large-v3-turbo translate everything ("The fiend has hit, brother" for "dushman ko lag gaya bhai") and
+    leave whole fights uncaptioned. Without it the same windows came out as the Hinglish that was spoken."""
+    if mode == "english" or (language or "").startswith("en"):
+        return GAME_WORDS.get(game)
+    return None
 
 
 def has_cuda():
@@ -79,6 +93,12 @@ def adopt(name):
 
 
 def load_model(name="large-v3-turbo", device=None):
+    model = _load(name, device)
+    model.clipstudio_name = name        # a cached transcript is only reused with the model that wrote it
+    return model
+
+
+def _load(name, device):
     from faster_whisper import WhisperModel
     device = device or ("cuda" if has_cuda() else "cpu")
     try:
@@ -168,3 +188,78 @@ def transcribe_window(model, source, start, length, language=None, roman=True, t
                 words.append({"w": to_roman(text) if roman else text,
                               "s": round(start + w.start, 3), "e": round(start + w.end, 3)})
     return words, spoken
+
+
+EDGE = 1.5              # audio read on each side of a missing stretch, so words cut at its edges are heard whole
+LONGEST_READ = 90       # seconds recognised in one go
+
+
+class Transcript:
+    """The words of one stream, filled in as clips need them. Clips overlap and every clip is read with padding, so
+    without this the same speech was recognised two or three times over."""
+
+    def __init__(self, path, key):
+        self.path, self.key = path, key
+        self.spans, self.words = [], []
+        try:
+            with open(path, encoding="utf-8") as f:
+                saved = json.load(f)
+            if saved.get("key") == key:
+                self.spans, self.words = saved["spans"], saved["words"]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+
+    def missing(self, start, end):
+        """The stretches of start..end nobody has read yet."""
+        out, at = [], start
+        for a, b in sorted(self.spans):
+            if b <= at or a >= end:
+                continue
+            if a > at:
+                out.append((at, a))
+            at = max(at, b)
+        if at < end:
+            out.append((at, end))
+        return [(a, b) for a, b in out if b - a >= 1.0]
+
+    def get(self, model, source, start, length, language=None, roman=True, track=0, task="transcribe",
+            hotwords=None):
+        """The same as transcribe_window, reading only what no earlier clip has read."""
+        end = start + length
+        for a, b in self.missing(max(start, 0.0), end):
+            for c in np.arange(a, b, LONGEST_READ):
+                c = float(c)
+                d = min(c + LONGEST_READ, b)
+                lo = max(c - EDGE, 0.0)
+                heard, _ = transcribe_window(model, source, lo, d - lo + EDGE, language, roman, track, task, hotwords)
+                self.words += [w for w in heard if c <= (w["s"] + w["e"]) / 2 < d]
+                self.spans.append([c, float(d)])
+        self.words.sort(key=lambda w: w["s"])
+        self.spans = merge(self.spans)
+        self.save()
+        return [w for w in self.words if w["e"] > start and w["s"] < end], language or ""
+
+    def save(self):
+        tmp = self.path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"key": self.key, "spans": self.spans, "words": self.words}, f, ensure_ascii=False)
+            os.replace(tmp, self.path)
+        except OSError:
+            pass                # then the next clip simply reads its speech again
+
+
+def merge(spans):
+    out = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1] + .01:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def transcript_for(sid, model, language, roman, task):
+    from .paths import words_file
+    key = "|".join(str(v) for v in (getattr(model, "clipstudio_name", ""), language or "", bool(roman), task))
+    return Transcript(words_file(sid), key)

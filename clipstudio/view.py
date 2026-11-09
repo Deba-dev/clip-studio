@@ -103,6 +103,17 @@ def game_filter(area, size):
     return crop + "scale=1920:1080"
 
 
+def stride(area, size):
+    """How many times the game picture is enlarged on its way to 1920x1080, rounded: 1 for 1080p and up, 3 for the
+    game square of a 360x640 phone download. The HUD readers compare pixels this far apart."""
+    width, height = size
+    x, y, w, h = area if area else (0, 0, width, height)
+    if not w or not h:
+        return 1
+    grow = 1080 / h if w / h < WIDE - .02 else 1920 / w if w / h > WIDE + .02 else 1080 / h
+    return max(int(grow + .5), 1)
+
+
 def parse(text):
     try:
         values = [int(v) for v in (text or "").split(",")]

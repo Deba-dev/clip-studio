@@ -195,7 +195,7 @@ def stream_files(library, sid):
 
     A recording another stream in the list also points at stays, so removing a duplicate never breaks the other.
     """
-    from .paths import signals_file
+    from .paths import signals_file, words_file
     session = library.session(sid)
     if session is None:
         return [], [], []
@@ -218,7 +218,7 @@ def stream_files(library, sid):
     thumbs = os.path.join(data_dir(), "thumbs")
     if os.path.isdir(thumbs):
         own += [os.path.join(thumbs, n) for n in os.listdir(thumbs) if re.match(r"^s%d[_.]" % sid, n)]
-    for path in (signals_file(sid), os.path.join(data_dir(), "compile-%d.json" % sid),
+    for path in (signals_file(sid), words_file(sid), os.path.join(data_dir(), "compile-%d.json" % sid),
                  os.path.join(data_dir(), "session-%d.lock" % sid)):
         if os.path.isfile(path):
             own.append(path)

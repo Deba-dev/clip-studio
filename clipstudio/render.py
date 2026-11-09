@@ -61,6 +61,14 @@ def even(value):
     return max(int(round(value / 2)) * 2, 2)
 
 
+def stacking_cam(facecam, size):
+    """The webcam box to stack above the game, or None. A vertical recording is already laid out for a phone (often
+    with its webcam on top), so it is used whole: stacking its webcam again would show the face twice."""
+    if not facecam or not size or size[1] > size[0]:
+        return None
+    return facecam
+
+
 def resolve(layout, facecam):
     if layout == "auto":
         return "stack" if facecam else "blur"
@@ -71,7 +79,7 @@ def enlargement(layout, size, out=(1080, 1920), facecam=None):
     """How many times bigger the game picture gets on the phone screen."""
     width, height = size
     out_w, out_h = out
-    layout = resolve(layout, facecam)
+    layout = resolve(layout, stacking_cam(facecam, size))
     if layout == "stack":
         return (out_h - even(out_h * 680 / 1920)) / height
     if layout == "crop":
@@ -106,6 +114,7 @@ def layout_filter(layout, size, facecam=None, src="[0:v]", pan=0.0, out=(1080, 1
     around the centre of the source frame, the webcam around the centre of its own box.
     """
     out_w, out_h = out
+    facecam = stacking_cam(facecam, size)
     layout = resolve(layout, facecam)
     zooms = zooms or {}
     head = ""
@@ -215,7 +224,7 @@ def build_command(source, clip, size, out_path, ass_path=None, facecam=None, enc
     joined, pad = join_parts(clip, "v")
     e = clip_edit.settings(clip)
     layout = clip.get("layout", "auto")
-    zooms = effects.output_windows(clip, resolve(layout, facecam))
+    zooms = effects.output_windows(clip, resolve(layout, stacking_cam(facecam, size)))
     graph = joined + layout_filter(layout, size, facecam, pad, e["pan"], out, enhance, zooms)
     if ass_path:
         graph = graph[:-3] + ",subtitles='%s'[v]" % filter_path(ass_path)

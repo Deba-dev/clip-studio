@@ -147,7 +147,10 @@ def test_caption_lines_break_on_pause_and_length():
 
 
 @pytest.mark.parametrize("hindi,roman", [("क्या", "kya"), ("भाई", "bhai"), ("नहीं", "nahi"), ("गया", "gaya"),
-                                         ("मारा", "mara"), ("बंदा", "banda"), ("hello", "hello"), ("खतम", "khatam")])
+                                         ("मारा", "mara"), ("बंदा", "banda"), ("hello", "hello"), ("खतम", "khatam"),
+                                         ("देखता", "dekhta"), ("इसको", "isko"), ("समझता", "samajhta"),
+                                         ("पिछली", "pichhli"), ("दुश्मन", "dushman"), ("भई", "bhai"),
+                                         ("ओो", "oo")])
 def test_roman_script(hindi, roman):
     assert to_roman(hindi) == roman
 
@@ -395,3 +398,32 @@ def test_a_paused_job_tree_is_frozen_and_stop_ends_all_of_it(tmp_path):
         group.kill()
     proc.wait(5)
     assert group.pids() == []
+
+
+def test_overlapping_clips_recognise_each_second_once(tmp_path, monkeypatch):
+    from clipstudio import transcribe
+    reads = []
+
+    def fake(model, source, start, length, *a, **k):
+        reads.append((round(start, 1), round(start + length, 1)))
+        return [{"w": "w%d" % t, "s": t, "e": t + .5} for t in range(int(start) + 1, int(start + length))], "hi"
+
+    monkeypatch.setattr(transcribe, "transcribe_window", fake)
+    path = str(tmp_path / "s1.words.json")
+    first, _ = transcribe.Transcript(path, "k").get(None, "x", 100, 40)
+    assert [w["s"] for w in first] == list(range(100, 140))
+    second, _ = transcribe.Transcript(path, "k").get(None, "x", 120, 40)     # half of it was read already
+    assert [w["s"] for w in second] == list(range(120, 160))
+    assert reads[1][0] >= 138 and len(reads) == 2
+    transcribe.Transcript(path, "k").get(None, "x", 110, 20)
+    assert len(reads) == 2                                                   # nothing new to read
+    transcribe.Transcript(path, "other settings").get(None, "x", 110, 20)
+    assert len(reads) == 3
+
+
+def test_a_vertical_recording_is_used_whole_even_with_a_webcam_marked():
+    """A vertical stream already has its webcam on top; stacking it again would show the face twice."""
+    cam = (0, 0, 1080, 600)
+    assert "vstack" not in render.layout_filter("auto", (1080, 1920), cam)
+    assert "vstack" in render.layout_filter("auto", (1920, 1080), (1500, 0, 420, 240))
+    assert render.enlargement("auto", (1080, 1920), facecam=cam) == 1.0

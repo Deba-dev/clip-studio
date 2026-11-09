@@ -97,6 +97,9 @@ def describe(seen):
         return ("Valorant HUD: %d rounds, %d kills by you%s, %d deaths, %d clutches.%s" % (
             seen.get("rounds", 0), seen.get("kills", 0), " (%d by teammates)" % team if team else "",
             seen.get("deaths", 0), seen.get("clutches", 0), where))
+    if seen.get("reader") == "banner":
+        return ("Valorant: %d kills read from your kill banner. The top bar with the players is not in this "
+                "picture, so deaths and rounds come from your voice and sound.%s" % (seen.get("kills", 0), where))
     if seen.get("reader") == "taught":
         return "%s: %d kills found from the kill notice you taught.%s" % (seen.get("game") or "This game",
                                                                          seen.get("kills", 0), where)

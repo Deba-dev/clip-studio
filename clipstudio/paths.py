@@ -50,3 +50,8 @@ def clip_thumb(sid, peak):
 
 def signals_file(sid):
     return os.path.join(_sub("signals"), "s%d.npz" % sid)
+
+
+def words_file(sid):
+    """The stream's transcript so far, so every second of speech is recognised once however many clips cover it."""
+    return os.path.join(_sub("signals"), "s%d.words.json" % sid)

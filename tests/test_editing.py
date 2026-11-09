@@ -212,10 +212,24 @@ def test_other_games_are_left_to_sound_and_speech():
 
 
 def test_skull_needs_to_hold_for_a_moment():
-    frames = np.zeros((12, hud.SKULL, hud.SKULL, 3), dtype=np.uint8)
-    frames[2, 75:105, 75:105] = 255              # one bright frame is noise
-    frames[6:10, 75:105, 75:105] = 255           # four in a row is a banner
+    frames = np.zeros((12, hud.SKULL, hud.BANNER_W, 3), dtype=np.uint8)
+    frames[2, 75:105, 85:115] = 255              # one bright frame is noise
+    frames[6:10, 75:105, 85:115] = 255           # four in a row is a banner
     assert hud.skull_runs(frames) == [1.5]
+
+
+def test_a_skinned_kill_banner_counts_and_a_lopsided_scene_does_not():
+    """Weapon skins swap the white skull for their own emblem. Any mirror-symmetric emblem is a banner."""
+    yy, xx = np.mgrid[:hud.SKULL, :hud.BANNER_W]
+    ring = np.abs(np.hypot(xx - 100, yy - 90) - 45) < 6
+    emblem = np.full((hud.SKULL, hud.BANNER_W, 3), 90, dtype=np.uint8)
+    emblem[ring] = (40, 140, 255)                 # a blue ring, nothing white
+    emblem[80:100, 92:108] = (220, 60, 60)
+    rng = np.random.default_rng(1)
+    scene = (rng.random((hud.SKULL, hud.BANNER_W, 1)) * 40 + 60).repeat(3, axis=2).astype(np.uint8)
+    scene[:, :70] = 200                           # a wall on one side
+    frames = np.stack([scene] * 4 + [emblem] * 5 + [scene] * 3)
+    assert hud.skull_runs(frames) == [1.0]
 
 
 # ---- picking moments
@@ -290,13 +304,17 @@ def test_a_clutch_joins_the_kills_of_its_round():
     assert {e["kind"] for e in m[0]["events"]} == {"kill", "clutch"}
 
 
-def test_a_teammates_kill_is_a_clip_only_when_you_reacted():
+def test_a_fight_while_alive_is_kept_and_a_spectated_one_only_when_you_reacted():
+    """A hidden kill banner must not lose a kill: every fight while you were alive is a clip, ranked low."""
     burst = [{"t": 302.0, "from": 298.0, "at": 300.0, "kind": "enemy_down", "round": 1}]
-    game = {"events": burst}
-    assert detect.game_moments(game, lanes(), 2000, own=[], team=[burst]) == []
+    alive = detect.game_moments({"events": burst}, lanes(), 2000, own=[], team=[burst])
+    assert len(alive) == 1 and alive[0]["title"] == "Fight" and alive[0]["score"] < detect.KILL_SCORE[1]
+    died = [{"t": 290.0, "from": 286.0, "kind": "you_down", "round": 1}]
+    game = {"events": died + burst}
+    assert [m["title"] for m in detect.game_moments(game, lanes(), 2000, own=[], team=[burst])] == ["Death"]
     s = lanes()
     s["laugh"][303] = .6
-    assert detect.game_moments(game, s, 2000, own=[], team=[burst])[0]["title"] == "Team fight"
+    assert "Fight" in [m["title"] for m in detect.game_moments(game, s, 2000, own=[], team=[burst])]
 
 
 def test_games_without_rounds_group_kills_into_fights():

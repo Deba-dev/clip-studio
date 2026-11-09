@@ -25,20 +25,28 @@ ALIVE_MATCH = 0.7                   # ability icons match at about 0.9 when aliv
 HOLD = 3                            # a drop must last this many keyframes: smoke and flashes cover portraits briefly
 MENU_GAP = 12                       # keyframes between rounds before a new match is assumed
 SKULL = 180                         # crop around the kill banner
+BANNER_W, HALF = 200, 80            # the banner crop is wider, so the mirror axis can shift a little
+MIRROR, EDGES = .7, 8               # banners measured .75-.96 symmetric with edges 9-41; game scenes under .55
+STRAIGHT = 1.2                      # banners measured .55-1.18, the buy menu's tiles 1.2-1.34 and up
+LONGEST_BANNER = 3.5                # seconds; banners hold about 2, the buy menu's symmetric tiles stay for many
+CONTAINED = 2.0                     # banners' edges sit 2-8x more inside the ring than outside; doorways about 1.5
 STUCK = 0.8                         # how often a slot may be filled beside an empty one before it counts as an overlay
 
 
-def _detail(patch):
+def _detail(patch, k=1):
+    """Edge strength. k is the step between compared pixels: a 360p stream blown up to 1080p is smooth at one pixel
+    and only shows its edges three pixels apart, so k follows the upscale (view.stride)."""
     g = patch.astype(np.float32).mean(axis=2)
-    return float(np.abs(g[1:-1, 1:-1] * 4 - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:]).mean())
+    return float(np.abs(g[k:-k, k:-k] * 4 - g[:-2 * k, k:-k] - g[2 * k:, k:-k] - g[k:-k, :-2 * k]
+                        - g[k:-k, 2 * k:]).mean())
 
 
-def read_slots(strip):
+def read_slots(strip, k=1):
     """Which of the ten portrait slots hold a player in one keyframe. strip is the top bar, RGB."""
     out = []
     for cx in ALLIES + ENEMIES:
         x = cx - LEFT
-        out.append(x + 20 <= strip.shape[1] and _detail(strip[28:72, x - 20:x + 20]) > PORTRAIT)
+        out.append(x + 20 <= strip.shape[1] and _detail(strip[28:72, x - 20:x + 20], k) > PORTRAIT)
     return out
 
 
@@ -54,11 +62,11 @@ def similarity(a, b):
     return float((a * b).mean())
 
 
-def scan(source, duration=0.0, on_progress=None, view="scale=1920:1080"):
+def scan(source, duration=0.0, on_progress=None, view="scale=1920:1080", k=1):
     """Returns (times, slots[n, 10], ability strips[n, h, w]) from the keyframes of a video.
 
     view turns the recording into the 1920x1080 game picture (view.game_filter), so vertical and boxed layouts read
-    the same as a plain game recording.
+    the same as a plain game recording. k is view.stride: how many times the game picture was enlarged.
     """
     graph = ("[0:v]" + view + ",split[a][b];[a]crop=%d:%d:%d:0[t];[b]crop=%d:%d:%d:975[l];"
              "[t][l]vstack=inputs=2,showinfo[v]" % (WIDTH, TOP, LEFT, WIDTH, LOW, LEFT))
@@ -84,7 +92,7 @@ def scan(source, duration=0.0, on_progress=None, view="scale=1920:1080"):
             if len(raw) < size:
                 break
             frame = np.frombuffer(raw, np.uint8).reshape(TOP + LOW, WIDTH, 3)
-            slots.append(read_slots(frame[:TOP]))
+            slots.append(read_slots(frame[:TOP], k))
             strips.append(frame[TOP:, 240:880].mean(axis=2).astype(np.uint8))
             if on_progress and duration and stamps and len(slots) % 50 == 0:
                 on_progress(min(stamps[-1] / duration, 1.0))
@@ -239,35 +247,102 @@ def is_live(game, t):
     return bool(game["live"][max(min(i, last), 0)] or game["live"][max(min(i - 1, last), 0)])
 
 
+def _box(g, k):
+    """Mean over a (2k)x(2k) box, edges repeated: a fast blur."""
+    c = np.cumsum(np.pad(g, ((k, k), (0, 0)), mode="edge"), axis=0)
+    g = (c[2 * k:] - c[:-2 * k]) / (2 * k)
+    c = np.cumsum(np.pad(g, ((0, 0), (k, k)), mode="edge"), axis=1)
+    return (c[:, 2 * k:] - c[:, :-2 * k]) / (2 * k)
+
+
+_r = np.hypot(np.mgrid[:SKULL, :BANNER_W][1] - BANNER_W / 2 + .5, np.mgrid[:SKULL, :BANNER_W][0] - SKULL / 2 + .5)
+INNER, OUTER = (_r > 10) & (_r < 70), _r >= 80
+_ys, _xs = np.nonzero((_r[:, (BANNER_W // 2 - HALF):(BANNER_W // 2 + HALF)] > 10)
+                      & (_r[:, (BANNER_W // 2 - HALF):(BANNER_W // 2 + HALF)] < 75))
+SHIFTS = np.arange(-10, 11, 2)
+# For every axis shift, the ring's pixels and their mirror images, so all shifts are compared in one step.
+_COLS = BANNER_W // 2 - HALF + SHIFTS[:, None] + _xs[None, :]
+_MIRROR = BANNER_W // 2 - HALF + SHIFTS[:, None] + (2 * HALF - 1 - _xs)[None, :]
+
+
+def banner_score(frame):
+    """(mirror symmetry, edge strength, inside/outside edges, straight lines) under the crosshair, frame grey (or RGB) SKULL x BANNER_W.
+
+    Every kill banner is mirror-symmetric whatever the weapon skin (the default skull, an eye in blue rings, a
+    pentagon crest, an X diamond...), and the game world behind it almost never is. The axis may sit a few pixels off
+    centre. A banner also keeps inside its ring, while a symmetric doorway or an ability overlay runs past it.
+    """
+    g = frame.astype(np.float32)
+    if g.ndim == 3:
+        g = g.mean(axis=2)
+    h = _box(g, 2) - _box(g, 10)
+    edges = np.abs(h)
+    inside = float(edges[INNER].mean() / max(edges[OUTER].mean(), .5))
+    a, b = h[_ys[None, :], _COLS], h[_ys[None, :], _MIRROR]
+    spread = a.std(axis=1)
+    a = (a - a.mean(axis=1, keepdims=True)) / np.maximum(spread, 1e-3)[:, None]
+    b = (b - b.mean(axis=1, keepdims=True)) / np.maximum(b.std(axis=1), 1e-3)[:, None]
+    corr = np.where(spread >= 1, (a * b).mean(axis=1), -1.0)
+    return float(corr.max()), float(spread[len(SHIFTS) // 2]), inside, straightness(h)
+
+
+def straightness(h):
+    """How much of the picture is long straight lines. Banners are round; the buy menu is a grid of tiles."""
+    c = h[:, BANNER_W // 2 - HALF:BANNER_W // 2 + HALF]
+    spread = max(float(c.std()), 1e-3)
+    return max(float(np.abs(c.mean(axis=1)).max()), float(np.abs(c[10:-10].mean(axis=0)).max())) / spread
+
+
+def is_banner(frame):
+    sym, edges, inside, lines = banner_score(frame)
+    return sym >= MIRROR and edges >= EDGES and inside >= CONTAINED and lines < STRAIGHT
+
+
 def skull_runs(frames, fps=4):
-    """Finds kill banners in crops around the crosshair. A banner holds for a second; a bright wall does not look like one."""
+    """Finds kill banners in crops around the crosshair. A banner holds for a second or two, never much longer."""
     if not len(frames):
         return []
-    yy, xx = np.mgrid[:SKULL, :SKULL]
-    radius = np.hypot(xx - SKULL / 2, yy - SKULL / 2)
-    core, outer = radius < 30, radius >= 80
-    hits = []
-    for f in frames:
-        white = f.min(axis=2) > 205
-        hits.append(.15 < white[core].mean() < .75 and white[outer].mean() < .12)
+    hits = [is_banner(f) for f in frames]
     runs, start = [], None
     for i, on in enumerate(hits + [False]):
         if on and start is None:
             start = i
         elif not on and start is not None:
-            if i - start >= 3:
+            if 3 <= i - start <= LONGEST_BANNER * fps:
                 runs.append(start / fps)
             start = None
     return runs
 
 
 def own_kills(source, start, end, view="scale=1920:1080"):
-    """Times of the streamer's own kills between two moments, read from the skull banner."""
+    """Times of the streamer's own kills between two moments, read from the kill banner."""
     start = max(start, 0.0)
-    graph = "fps=4,%s,crop=%d:%d:%d:%d" % (view, SKULL, SKULL, 960 - SKULL // 2, 860 - SKULL // 2)
+    graph = "fps=4,%s,crop=%d:%d:%d:%d,format=gray" % (view, BANNER_W, SKULL, 960 - BANNER_W // 2, 860 - SKULL // 2)
     cmd = [tool("ffmpeg"), "-v", "error", "-ss", "%.3f" % start, "-t", "%.3f" % (end - start), *input_args(source),
-           "-an", "-vf", graph, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+           "-an", "-vf", graph, "-f", "rawvideo", "-"]
     out = subprocess.run(cmd, capture_output=True, creationflags=HIDE).stdout
-    size = SKULL * SKULL * 3
-    frames = np.frombuffer(out[:len(out) // size * size], np.uint8).reshape(-1, SKULL, SKULL, 3)
+    size = SKULL * BANNER_W
+    frames = np.frombuffer(out[:len(out) // size * size], np.uint8).reshape(-1, SKULL, BANNER_W)
     return [start + t for t in skull_runs(frames)]
+
+
+CHUNK = 120             # seconds of banner crops read at once: 4 frames a second of a 3-hour stream would not fit
+
+
+def banner_kills(source, spans, view="scale=1920:1080", on_progress=None):
+    """The streamer's kills read from the kill banner alone, for streams whose top bar is out of the picture (a
+    vertical stream with no webcam band crops the game to 9:16, but the banner sits in the middle and survives).
+
+    spans: [(start, end)] to look at, usually around gunfire (teach.windows). Returns kill times.
+    """
+    pieces = [(a, min(a + CHUNK + 2, b)) for s, b in spans for a in np.arange(s, b, CHUNK)]
+    total = sum(b - a for a, b in pieces) or 1.0
+    found, done = [], 0.0
+    for a, b in pieces:
+        for t in own_kills(source, float(a), float(b), view):
+            if not any(abs(t - u) < 1.5 for u in found):
+                found.append(t)
+        done += b - a
+        if on_progress:
+            on_progress(min(done / total, 1.0))
+    return sorted(found)
