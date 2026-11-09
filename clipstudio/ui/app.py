@@ -6,7 +6,7 @@ import sys
 
 from PySide6.QtCore import QAbstractNativeEventFilter, QEasingCurve, QObject, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction, QBrush, QColor, QDesktopServices, QFont, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QAction, QBrush, QDesktopServices, QFont, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (QApplication, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                QMenu, QMessageBox, QScrollArea, QVBoxLayout, QWidget)
 
@@ -118,9 +118,14 @@ class Nav(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), QColor(9, 6, 30, 165))
+        p.fillRect(self.rect(), T.deep(165))
         p.setPen(QPen(T.LINE, 1))
         p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
+        if T.LOOK == "film":            # a strip of film perforations down the edge
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(alpha(T.A1, 34))
+            for y in range(10, self.height(), 22):
+                p.drawRoundedRect(QRectF(self.width() - 12, y, 6, 11), 2, 2)
         mark = QRectF(18, 22, 34, 34)
         g = QLinearGradient(mark.topLeft(), mark.bottomRight())
         g.setColorAt(0, T.A1)
@@ -128,7 +133,7 @@ class Nav(QWidget):
         p.setBrush(QBrush(g))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(mark, 10, 10)
-        draw_icon(p, "play", mark.adjusted(9, 9, -9, -9), T.TEXT, 1.5, fill=True)
+        draw_icon(p, "play", mark.adjusted(9, 9, -9, -9), T.ON, 1.5, fill=True)
         p.setPen(T.TEXT)
         p.setFont(font(16, QFont.Weight.Bold))
         p.drawText(QRectF(60, 20, 130, 22), Qt.AlignmentFlag.AlignVCenter, PRODUCT_NAME)
@@ -206,7 +211,7 @@ class ActionTile(QWidget):
         p.setBrush(QBrush(g))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(box, 12, 12)
-        draw_icon(p, self.icon, box.adjusted(11, 11, -11, -11), T.TEXT, 2)
+        draw_icon(p, self.icon, box.adjusted(11, 11, -11, -11), T.ON, 2)
         p.setPen(T.TEXT)
         p.setFont(font(15, QFont.Weight.DemiBold))
         p.drawText(QRectF(box.right() + 14, r.y() + 12, r.width() - 86, 24), Qt.AlignmentFlag.AlignVCenter, self.title)
@@ -409,7 +414,7 @@ class Pipeline(QWidget):
                 p.setBrush(alpha(T.A2, 120 * (1 - self.pulse)))
                 p.drawEllipse(c, 12 + 9 * self.pulse, 12 + 9 * self.pulse)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(T.A2 if now else (T.A1 if done else QColor(40, 30, 84)))
+            p.setBrush(T.A2 if now else (T.A1 if done else T.SURF_HI))
             p.drawEllipse(c, 12, 12)
             draw_icon(p, "check" if done else icon, QRectF(c.x() - 7, c.y() - 7, 14, 14),
                       T.TEXT if done or now else T.MUTE, 2)
@@ -466,7 +471,7 @@ class LinkSheet(QWidget):
     def paint_card(self, event):
         p = QPainter(self.card)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        panel(p, QRectF(self.card.rect()).adjusted(1, 1, -1, -1), 18, QColor(22, 14, 54, 252), alpha(T.A2, 170))
+        panel(p, QRectF(self.card.rect()).adjusted(1, 1, -1, -1), 18, T.surf(252), alpha(T.A2, 170))
 
     def present(self, folder=""):
         self.setGeometry(self.parent().rect())
@@ -515,7 +520,7 @@ class LinkSheet(QWidget):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(3, 2, 12, int(170 * self.t)))
+        p.fillRect(self.rect(), T.deep(170 * self.t))
 
 
 class StreamsPage(QWidget):
@@ -1090,7 +1095,8 @@ def check_tools():
 def run(args):
     app = QApplication(sys.argv)
     app.setApplicationName(PRODUCT_NAME)
-    app.setStyleSheet(T.QSS)
+    from ..settings import Settings
+    app.setStyleSheet(T.use(Settings().get("look")))
     if not check_tools():
         QMessageBox.critical(None, PRODUCT_NAME, "FFmpeg is missing, so recordings cannot be read.")
         return 1

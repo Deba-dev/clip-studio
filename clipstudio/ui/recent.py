@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel, QLineEdi
 from .. import fetch
 from ..account import run_in_thread
 from .cards import clock
+from . import theme as T
 from .fx import Button
 
 THUMB = (160, 90)
@@ -27,7 +28,7 @@ class StreamRow(QWidget):
         self.check.setChecked(not clipped)
         self.picture = QLabel()
         self.picture.setFixedSize(*THUMB)
-        self.picture.setStyleSheet("background:#140f35;border-radius:8px")
+        self.picture.setStyleSheet("background:%s;border-radius:8px" % T.SURF.name())
         title = QLabel(stream["title"])
         title.setWordWrap(True)
         meta = QLabel(clock(stream["duration"]) + ("  ·  Clipped already" if clipped else ""))

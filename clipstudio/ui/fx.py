@@ -223,7 +223,7 @@ class Aurora(QWidget):
 
     def paintEvent(self, event):
         w, h = max(self.width() // 8, 8), max(self.height() // 8, 8)
-        key = (w, h, self.phase, T.BG.rgb())
+        key = (w, h, self.phase, T.BG.rgb(), T.LOOK)
         if getattr(self, "cached", (None,))[0] != key:
             self.cached = (key, self.render(w, h))      # behind a playing video this repaints every frame
         p = QPainter(self)
@@ -236,8 +236,9 @@ class Aurora(QWidget):
         q = QPainter(image)
         q.setPen(Qt.PenStyle.NoPen)
         t = self.phase
-        for color, speed, rx, ry, size, power in ((T.A1, 1.0, .25, .2, .75, 95), (T.A2, .7, .8, .85, .7, 62),
-                                                  (T.A3, 1.3, .85, .15, .55, 48)):
+        lights = T.aurora()
+        for (color, power), (speed, rx, ry, size) in zip(lights, ((1.0, .25, .2, .75), (.7, .8, .85, .7),
+                                                                  (1.3, .85, .15, .55))):
             x = w * (rx + .14 * math.sin(t * speed))
             y = h * (ry + .16 * math.cos(t * speed * .8))
             g = QRadialGradient(QPointF(x, y), w * size)
@@ -403,7 +404,7 @@ class Button(QPushButton):
             p.setBrush(alpha(mix(T.TEXT, T.GOOD, self.success), 22 * max(self.hover, self.success)))
             p.setPen(Qt.PenStyle.NoPen)
         else:
-            p.setBrush(mix(QColor(26, 17, 64, 220), QColor(46, 30, 104, 240), self.hover) if on else QColor(22, 17, 48, 150))
+            p.setBrush(T.surf(220 + 20 * self.hover, self.hover) if on else T.surf(150))
             p.setPen(QPen(alpha(accent, (120 + 100 * self.hover) if on else 40), 1))
         p.drawPath(shape)
         p.save()
@@ -421,7 +422,7 @@ class Button(QPushButton):
             p.setBrush(alpha(T.TEXT, 70 * (1 - self.ripple)))
             p.drawEllipse(self.ripple_at, reach, reach)
         p.restore()
-        color = T.TEXT if on else T.FAINT
+        color = (T.ON if self.primary and not self.success else T.TEXT) if on else T.FAINT
         text = self.text()
         width = self.fontMetrics().horizontalAdvance(text)
         size = 16
@@ -488,7 +489,7 @@ class Toggle(QCheckBox):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         track = QRectF(1, 5, 38, 20)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(mix(QColor(50, 42, 90), T.A1, self.knob))
+        p.setBrush(mix(T.SURF_HI, T.A1, self.knob))
         p.drawRoundedRect(track, 10, 10)
         p.setBrush(T.TEXT)
         p.drawEllipse(QPointF(11 + 18 * self.knob, 15), 7.5, 7.5)
@@ -531,7 +532,7 @@ class Segmented(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        panel(p, r, 10, QColor(12, 8, 36, 220))
+        panel(p, r, 10, T.deep(220))
         w = r.width() / len(self.options)
         pill = QRectF(r.x() + w * self.pill + 3, r.y() + 3, w - 6, r.height() - 6)
         g = QLinearGradient(pill.topLeft(), pill.bottomRight())
@@ -577,7 +578,7 @@ class Toast(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         color = {"good": T.GOOD, "bad": T.BAD, "info": T.A2}[self.kind]
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
-        panel(p, r, 13, QColor(24, 16, 58, 248), alpha(color, 170))
+        panel(p, r, 13, T.surf(248), alpha(color, 170))
         draw_icon(p, {"good": "check", "bad": "alert", "info": "spark"}[self.kind], QRectF(16, 16, 20, 20), color)
         p.setPen(T.TEXT)
         p.setFont(self.font())

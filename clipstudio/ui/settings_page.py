@@ -8,8 +8,8 @@ nothing is lost by leaving the page. Folders are the exception: picking one save
 import os
 
 from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QKeySequence, QLinearGradient, QPainter, QPen, QShortcut, QFont
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QScrollArea,
+from PySide6.QtGui import QBrush, QKeySequence, QLinearGradient, QPainter, QPen, QShortcut, QFont
+from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                                QSlider, QSpinBox, QVBoxLayout, QWidget)
 
 from .gamepicker import GamePicker
@@ -321,7 +321,7 @@ class SaveBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(6, 6, -6, -6)
         glow(p, r, 14, T.A2, 1.3, 6)
-        panel(p, r, 14, QColor(24, 14, 58, 250), alpha(T.A2, 160))
+        panel(p, r, 14, T.surf(250), alpha(T.A2, 160))
         level = abs(1 - self.beat)            # a dot that breathes: something is waiting to be saved
         p.setBrush(mix(T.WARN, T.CAPTION, level))
         p.setPen(Qt.PenStyle.NoPen)
@@ -424,7 +424,7 @@ class SettingsPage(QWidget):
             label = QLabel("Normal")
             label.setFixedWidth(64)
             label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            label.setStyleSheet("color: #ffe100; font-weight: 600;")
+            label.setStyleSheet("color: %s; font-weight: 600;" % T.A1.name())
             slider.valueChanged.connect(lambda v, label=label: label.setText(level_text(v)))
             self.wants[key], self.want_labels[key] = slider, label
         self.roman = Toggle("")
@@ -443,6 +443,11 @@ class SettingsPage(QWidget):
                              ("AI upscale (best, a few minutes per clip)", "ai")):
             self.enhance.addItem(label, value)
         self.motion = Toggle("")
+        self.look = QComboBox()
+        for key, look in T.LOOKS.items():
+            self.look.addItem(look["label"], key)
+        self.look.setCurrentIndex(max(self.look.findData(self.w.settings.get("look")), 0))
+        self.look.currentIndexChanged.connect(lambda _: self.look_changed())
         self.check = Button("Check for updates", "down")
         self.check.clicked.connect(self.check_updates)
         self.w.updater.nothing.connect(lambda: self.check.busy and self.check.done("You're up to date"))
@@ -517,6 +522,8 @@ class SettingsPage(QWidget):
         premium = Card("Premium", "star")
         premium.add("Your plan", "", self.premium, wide=True)
         app = Card("App", "gear")
+        app.add("Look", "Film suite is warm tangerine on graphite; Midnight gold is gold on deep blue. Changes "
+                        "at once.", self.look)
         app.add("Reduce motion", "Animations already pause by themselves while OBS records or streams.",
                 self.motion)
         app.add("Version " + VERSION, "Updates install only when no stream, recording or job is running.",
@@ -578,6 +585,17 @@ class SettingsPage(QWidget):
         self.w.toast("Changes discarded", "info")
 
     # ---- saving
+    def look_changed(self):
+        """A look is saved and shown at once, like a folder: there is nothing to undo with Save or Discard."""
+        key = self.look.currentData()
+        self.w.settings.set("look", key)
+        QApplication.instance().setStyleSheet(T.use(key))
+        for label in self.want_labels.values():
+            label.setStyleSheet("color: %s; font-weight: 600;" % T.A1.name())
+        for widget in QApplication.allWidgets():
+            widget.update()
+        self.w.toast(T.LOOKS[key]["label"] + " look on")
+
     def folder_changed(self, key, path):
         self.w.settings.set(key, path)
         self.w.toast("Folder saved" if path else "Back to automatic")

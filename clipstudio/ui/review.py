@@ -120,7 +120,7 @@ class PresetChip(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         p.setPen(QPen(T.A2 if self.on else QColor(255, 255, 255, 30), 2 if self.on else 1))
-        p.setBrush(QColor(14, 10, 40))
+        p.setBrush(T.SURF)
         p.drawRoundedRect(r, 9, 9)
         f = QFont()
         f.setFamilies([st["font"], "Segoe UI"])

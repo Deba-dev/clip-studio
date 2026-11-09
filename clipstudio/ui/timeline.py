@@ -1,7 +1,7 @@
 """Two views of time: the whole stream at a glance, and a close-up for trimming with handles that snap to words."""
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QFont, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from .. import edit as clip_edit
@@ -171,7 +171,7 @@ class StreamMap(QWidget):
                 text = p.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, 360)
             width = p.fontMetrics().horizontalAdvance(text) + 14
             tip = QRectF(min(max(mx - width / 2, 2), self.width() - width - 2), 2, width, 18)
-            p.setBrush(QColor(8, 5, 26, 235))
+            p.setBrush(T.deep(235))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(tip, 6, 6)
             p.setPen(T.TEXT)
@@ -193,7 +193,7 @@ class StreamMap(QWidget):
             p.setBrush(alpha(color, dim if active else min(dim, 215)))
             box = QRectF(x - size / 2, y - (4 if active else 0), size, size)
             p.drawEllipse(box)
-            draw_icon(p, icon, box.adjusted(3, 3, -3, -3), QColor(10, 6, 30), 2.4)
+            draw_icon(p, icon, box.adjusted(3, 3, -3, -3), T.DEEP, 2.4)
 
     def paint_pins(self, p, a):
         """A lane under the activity: kills, deaths and laughter, so the stream can be read at a glance."""
@@ -430,7 +430,7 @@ class TrimBar(QWidget):
         for c0, c1 in self.cuts:
             r = QRectF(self.x_of(c0), a.y() - 2, self.x_of(c1) - self.x_of(c0), a.height() + 4)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(8, 5, 26, 170))
+            p.setBrush(T.deep(170))
             p.drawRect(r)
             p.setBrush(QBrush(alpha(T.BAD, 170), Qt.BrushStyle.BDiagPattern))
             p.drawRect(r)

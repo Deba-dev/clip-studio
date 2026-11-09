@@ -2,7 +2,7 @@
 import os
 
 from PySide6.QtCore import QEasingCurve, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QBrush, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QFont, QLinearGradient, QBrush, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 from .. import edit as clip_edit
@@ -41,7 +41,7 @@ def pill(p, x, y, text, icon, color):
     width = p.fontMetrics().horizontalAdvance(text)
     r = QRectF(x, y, width + 30, 22)
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(8, 5, 26, 215))
+    p.setBrush(T.deep(215))
     p.drawRoundedRect(r, 11, 11)
     draw_icon(p, icon, QRectF(x + 7, y + 4, 14, 14), color, 2.2)
     p.setPen(T.TEXT)
@@ -120,8 +120,8 @@ class StreamCard(Card):
         p.setClipPath(rounded(image, 13))
         if self.pixmap.isNull():
             g = QLinearGradient(image.topLeft(), image.bottomRight())
-            g.setColorAt(0, QColor(50, 24, 120))
-            g.setColorAt(1, QColor(90, 20, 110))
+            g.setColorAt(0, T.SURF_HI)
+            g.setColorAt(1, T.SURF)
             p.fillRect(image, QBrush(g))
             draw_icon(p, "film", QRectF(image.center().x() - 20, image.center().y() - 20, 40, 40), alpha(T.TEXT, 120))
         else:
@@ -140,7 +140,7 @@ class StreamCard(Card):
         label, icon, color = STATUS.get(status, STATUS["new"])
         pill(p, r.x() + 10, r.y() + 10, label, icon, color)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(8, 5, 26, 215))
+        p.setBrush(T.deep(215))
         more = self.more_rect().translated(0, r.y() - 9)
         p.drawEllipse(more)
         draw_icon(p, "more", more.adjusted(6, 6, -6, -6), T.TEXT, 2.2)
@@ -217,12 +217,12 @@ class ClipCard(Card):
         image = QRectF(r.x() + 7, r.y() + 7, 116, r.height() - 14)
         p.save()
         p.setClipPath(rounded(image, 8))
-        p.fillRect(image, QColor(30, 18, 70))
+        p.fillRect(image, T.SURF)
         cover(p, self.pixmap, image)
         p.restore()
         p.setFont(font(11, QFont.Weight.Bold))
         badge = QRectF(image.x() + 5, image.y() + 5, 24, 19)
-        p.setBrush(QColor(8, 5, 26, 215))
+        p.setBrush(T.deep(215))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(badge, 6, 6)
         p.setPen(T.TEXT)
@@ -230,7 +230,7 @@ class ClipCard(Card):
         length = "%ds" % clip_edit.length(c)
         tw = p.fontMetrics().horizontalAdvance(length) + 12
         tag = QRectF(image.right() - tw - 5, image.bottom() - 24, tw, 19)
-        p.setBrush(QColor(8, 5, 26, 215))
+        p.setBrush(T.deep(215))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(tag, 6, 6)
         p.setPen(T.TEXT)
