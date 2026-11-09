@@ -1,7 +1,8 @@
 """Removes what the app leaves behind, so it never slowly fills the user's drive.
 
 Only files the app made itself are touched. Finished streams, exported clips, the library and settings are never
-removed. Light cleanup runs at every start; the full one runs once after each update.
+removed by cleanup. Light cleanup runs at every start; the full one runs once after each update. The one exception is
+at the end: when the user removes a stream or a clip from the list, its files go too (to the Recycle Bin).
 """
 import glob
 import os
@@ -146,3 +147,105 @@ def full(library, settings):
         except OSError:
             pass                    # one stuck folder must not stop the rest
     return freed
+
+
+# ---- removing a stream or a clip the user took off the list
+def concat_parts(path):
+    """The recordings an OBS split-recording list joins."""
+    parts = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("file '") and line.endswith("'"):
+                    parts.append(os.path.normpath(line[6:-1].replace("'\''", "'")))
+    except OSError:
+        pass
+    return parts
+
+
+def _same(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def export_files(path):
+    """An exported clip and the title-and-hashtags note saved next to it."""
+    return [p for p in (path, os.path.splitext(path)[0] + ".txt") if path and os.path.isfile(p)]
+
+
+def clip_files(library, clip):
+    """What removing this clip deletes: its export (with its note) and its preview picture.
+
+    A file another clip still uses stays: a split clip shares its preview, and two clips can never share an export,
+    but a stale path must not take someone else's video with it.
+    """
+    from .paths import clip_thumb
+    others = [c for c in library.clips(clip["session"]) if c["id"] != clip["id"]]
+    files = []
+    if clip["exported"] and not any(c["exported"] and _same(c["exported"], clip["exported"]) for c in others):
+        files += export_files(clip["exported"])
+    thumb = clip_thumb(clip["session"], clip["peak"])
+    if os.path.isfile(thumb) and not any(int(c["peak"]) == int(clip["peak"]) for c in others):
+        files.append(thumb)
+    return files
+
+
+def stream_files(library, sid):
+    """What removing this stream deletes, as (recordings, exported clips with their notes, the app's own files).
+
+    A recording another stream in the list also points at stays, so removing a duplicate never breaks the other.
+    """
+    from .paths import signals_file
+    session = library.session(sid)
+    if session is None:
+        return [], [], []
+    in_use = []
+    for row in library.sessions():
+        if row["id"] != sid and row["source"]:
+            in_use.append(row["source"])
+            if row["source"].endswith(".ffconcat"):
+                in_use += concat_parts(row["source"])
+    source = session["source"] or ""
+    recordings = concat_parts(source) if source.endswith(".ffconcat") else [source]
+    recordings = [p for p in recordings if p and os.path.isfile(p) and not any(_same(p, u) for u in in_use)]
+    exports = []
+    for clip in library.clips(sid):
+        if clip["exported"]:
+            exports += [p for p in export_files(clip["exported"]) if not any(_same(p, e) for e in exports)]
+    own = []
+    if source.endswith(".ffconcat") and os.path.isfile(source):
+        own.append(source)
+    thumbs = os.path.join(data_dir(), "thumbs")
+    if os.path.isdir(thumbs):
+        own += [os.path.join(thumbs, n) for n in os.listdir(thumbs) if re.match(r"^s%d[_.]" % sid, n)]
+    for path in (signals_file(sid), os.path.join(data_dir(), "compile-%d.json" % sid),
+                 os.path.join(data_dir(), "session-%d.lock" % sid)):
+        if os.path.isfile(path):
+            own.append(path)
+    return recordings, exports, own
+
+
+def discard(paths, trash=None):
+    """Deletes files, through `trash` (the Recycle Bin) when given. Returns the ones that could not be deleted."""
+    stuck = []
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            if trash and trash(path):
+                continue
+            remove_or_raise(path)
+        except OSError:
+            stuck.append(path)      # open in a player, or on a drive that went away
+    return stuck
+
+
+def remove_or_raise(path):
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
+
+
+def size_text(size):
+    return "%.1f GB" % (size / 1e9) if size >= 1e9 else "%d MB" % max(round(size / 1e6), 1 if size else 0)

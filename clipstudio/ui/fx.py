@@ -140,6 +140,7 @@ ICONS = {
     "laugh": "O 12 12 9 M7.5 13 C8.5 18 15.5 18 16.5 13 Z M8 9 L10 10 L8 11 M16 9 L14 10 L16 11",
     "target": "O 12 12 8 O 12 12 3 M12 2 L12 6 M12 18 L12 22 M2 12 L6 12 M18 12 L22 12",
     "bolt": "M13 3 L5 14 L11 14 L10 21 L19 10 L13 10 Z",
+    "trash": "M4 7 L20 7 M9 7 L9 4 L15 4 L15 7 M6 7 L7 20 L17 20 L18 7 M10 11 L10 16 M14 11 L14 16",
 }
 _cache = {}
 
@@ -629,3 +630,13 @@ class Confetti(QWidget):
             p.setBrush(alpha(color, 255 * fade))
             p.drawRect(QRectF(-size / 2, -size / 4, size, size / 2 + abs(math.sin(spin)) * size / 2))
             p.restore()
+
+
+def to_trash(path):
+    """Moves a file to the Recycle Bin. False when the system has no bin for that drive."""
+    from PySide6.QtCore import QFile
+    try:
+        moved = QFile.moveToTrash(path)
+    except Exception:
+        return False
+    return bool(moved[0] if isinstance(moved, tuple) else moved)

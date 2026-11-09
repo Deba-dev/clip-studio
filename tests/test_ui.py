@@ -5,7 +5,7 @@ import pytest
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtCore import QPoint
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from clipstudio.db import Library
 from clipstudio.settings import Settings
@@ -15,6 +15,8 @@ from clipstudio.ui.app import MainWindow
 @pytest.fixture
 def window(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIPSTUDIO_DATA", str(tmp_path))
+    monkeypatch.setattr("clipstudio.ui.app.fx_trash", lambda path: False)       # tests never fill the Recycle Bin
+    monkeypatch.setattr("clipstudio.ui.review.to_trash", lambda path: False)
     app = QApplication.instance() or QApplication([])
     library = Library(str(tmp_path / "lib.db"))
     w = MainWindow(library=library, settings=Settings(str(tmp_path / "s.json")), use_obs=False)
@@ -231,3 +233,93 @@ def test_buttons_spin_while_busy_and_confirm_when_done(window):
 def level_words():
     from clipstudio.ui.settings_page import level_text
     return [level_text(v) for v in (0, 50, 100, 150, 200)]
+
+
+def ready_stream(window, tmp_path, clips=3):
+    source = tmp_path / "rec.mp4"
+    source.write_bytes(b"x" * 10)
+    sid = window.library.add_session("s", str(source))
+    window.library.update_session(sid, status="ready")
+    window.library.replace_clips(sid, [{"start": i * 20.0, "end": i * 20.0 + 10, "peak": i * 20.0 + 4, "score": 5.0 - i,
+                                        "reasons": ["r"]} for i in range(clips)])
+    return sid, source
+
+
+def test_background_captions_never_look_like_the_analysis_starting_again(window, tmp_path):
+    sid, _ = ready_stream(window, tmp_path)
+    pipe = window.streams.pipeline
+    window.jobs.current = ("analyze", sid)
+    window.on_progress("Making previews", .5, "")
+    window.library.update_clip(window.library.clips(sid)[0]["id"], captioned="0")
+    window.on_job_done("analyze", sid, {"done": True})
+    assert pipe.complete and pipe.stage == "Analysis complete" and pipe.button.isHidden()
+    window.jobs.current = ("captions", sid)
+    window.on_progress("Captioning more clips", .1, "1 of 3")
+    assert pipe.complete and pipe.stage == "Analysis complete"      # the panel is untouched
+    window.jobs.current = ("analyze", sid)
+    window.on_progress("Reading the game", .2, "")                 # a stage mid-analysis never resets to Download
+    assert not pipe.complete and pipe.stage == "Reading the game" and not pipe.button.isHidden()
+
+
+def test_all_clips_changes_every_clip_and_undoes_in_one_step(window, tmp_path):
+    sid, _ = ready_stream(window, tmp_path)
+    review = window.review
+    review.open(sid)
+    review.scope.set("all")
+    review.set_edit(gain_db=4.0, zoom=False)
+    review.layout_changed("crop")
+    assert all(c["edit"]["gain_db"] == 4.0 and not c["edit"]["zoom"] and c["layout"] == "crop"
+               for c in window.library.clips(sid))
+    review.set_edit(cuts=[[1.0, 2.0]])          # cuts are each clip's own, even in All clips
+    assert sum(bool(c["edit"].get("cuts")) for c in window.library.clips(sid)) == 1
+    review.undo()
+    review.undo()
+    assert all(c["layout"] != "crop" for c in window.library.clips(sid))
+    review.scope.set("one")
+    review.set_edit(fade_in=1.0)
+    assert sum(c["edit"].get("fade_in") == 1.0 for c in window.library.clips(sid)) == 1
+
+
+def test_removing_a_clip_deletes_its_export(window, tmp_path):
+    sid, _ = ready_stream(window, tmp_path)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"v")
+    (tmp_path / "clip.txt").write_text("title")
+    first = window.library.clips(sid)[0]
+    window.library.update_clip(first["id"], state="exported", exported=str(video))
+    review = window.review
+    review.open(sid)
+    review.ask = lambda text: QMessageBox.StandardButton.Yes
+    review.select(next(i for i, c in enumerate(review.cards) if c.clip["id"] == first["id"]))
+    review.remove_clip()
+    assert window.library.clip(first["id"]) is None and len(review.cards) == 2
+    assert not video.exists() and not (tmp_path / "clip.txt").exists()
+    assert [c["rank"] for c in window.library.clips(sid)] == [1, 2]
+
+
+def test_removing_a_stream_deletes_its_recording_and_exports(window, tmp_path):
+    from clipstudio.paths import session_thumb, signals_file
+    sid, source = ready_stream(window, tmp_path)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"v")
+    window.library.update_clip(window.library.clips(sid)[0]["id"], state="exported", exported=str(video))
+    open(session_thumb(sid), "wb").close()
+    open(signals_file(sid), "wb").close()
+    twin = window.library.add_session("same file", str(source))    # a second entry for the same recording
+    asked = []
+    window.streams.ask = lambda text: asked.append(text) or QMessageBox.StandardButton.Yes
+    window.streams.refresh()
+    window.streams.remove(twin)
+    assert source.exists()                      # still used by the other entry
+    window.streams.remove(sid)
+    assert "Recycle Bin" in asked[-1] and "1 exported clip" in asked[-1]
+    assert window.library.session(sid) is None
+    assert not source.exists() and not video.exists()
+    assert not os.path.exists(session_thumb(sid)) and not os.path.exists(signals_file(sid))
+
+
+def test_saying_no_keeps_the_stream_and_its_files(window, tmp_path):
+    sid, source = ready_stream(window, tmp_path)
+    window.streams.ask = lambda text: QMessageBox.StandardButton.No
+    window.streams.remove(sid)
+    assert window.library.session(sid) is not None and source.exists()

@@ -21,6 +21,7 @@ from . import theme as T
 from .cards import WORKING, StreamCard, clock
 from .fx import (MOTION, Aurora, Button, Confetti, Pages, Toast, Toggle, alpha, draw_icon, draw_ring, font, glow, mix,
                  panel, tween)
+from .fx import to_trash as fx_trash
 from .jobs import Jobs
 from .premium import AccountHub, UpgradeDialog
 from .recent import RecentDialog
@@ -34,8 +35,11 @@ VIDEO_FILTER = "Recordings (*.mp4 *.mkv *.mov *.flv *.ts *.webm)"
 STEPS = (("Download", "down"), ("Listen", "wave"), ("Rank", "spark"), ("Caption", "caption"), ("Preview", "film"))
 STOPPED_ON_CLOSE = "Stopped because Clip Studio was closed. Use the card menu to analyze it again."
 STOPPED = "Stopped. Use the card menu to analyze it again."
-STAGE_STEP = {"Downloading": 0, "Getting chat replay": 0, "Reading audio": 1, "Finding moments": 2,
-              "Loading speech model": 3, "Writing captions": 3, "Making previews": 4, "Done": 4}
+STAGE_STEP = {"Downloading": 0, "Getting chat replay": 0, "Reading audio": 1, "Reading the game": 2,
+              "Finding moments": 2, "Checking kills": 2, "Finding your kills": 2, "Loading speech model": 3,
+              "Finding the language": 3, "Writing captions": 3, "Making previews": 4, "Done": 4}
+PANEL_JOBS = ("analyze", "fetch")      # background captions and kill finding never take over the progress panel
+COMPLETE_HOLD = 6000                   # how long "Analysis complete" stays before the panel slides away
 
 
 class Bridge(QObject):
@@ -308,6 +312,8 @@ class Pipeline(QWidget):
         self.button.setParent(self)
         self.button.clicked.connect(self.cancel)
         self.paused = False
+        self.pause_allowed = True
+        self.complete = False       # showing "Analysis complete": every step ticked, nothing left to stop
         self.pause_button = Button("Pause", "pause", flat=True)
         self.pause_button.setParent(self)
         self.pause_button.setToolTip("Frees your PC for now. Resume carries on from exactly here.\n"
@@ -317,7 +323,7 @@ class Pipeline(QWidget):
         self.timer.start()
 
     def beat(self):
-        if self.t > .5 and MOTION.on and not self.paused:
+        if self.t > .5 and MOTION.on and not self.paused and not self.complete:
             self.pulse = (self.pulse + .025) % 1
             self.update()
 
@@ -327,7 +333,8 @@ class Pipeline(QWidget):
 
     def set_paused(self, paused, allowed=True):
         self.paused = paused
-        self.pause_button.setVisible(allowed)
+        self.pause_allowed = allowed
+        self.pause_button.setVisible(allowed and not self.complete)
         self.pause_button.setText("Resume" if paused else "Pause")
         self.pause_button.icon_name = "play" if paused else "pause"
         self.pause_button.update()
@@ -343,8 +350,23 @@ class Pipeline(QWidget):
     def grow(self):
         self.setFixedHeight(int(self.HEIGHT * self.t))
 
+    def finish(self, note):
+        """The analysis is over: every step ticks, the buttons go, and the panel slides away by itself."""
+        self.complete = True
+        self.button.hide()
+        self.pause_button.hide()
+        tween(self, "step_index", len(STEPS) - 1, 420)
+        tween(self, "value", 1.0, 200)
+        self.stage, self.note = "Analysis complete", note
+        self.update()
+        QTimer.singleShot(COMPLETE_HOLD, self, lambda: self.complete and self.close_panel())
+
     def report(self, stage, value, note):
-        step = STAGE_STEP.get(stage, 0)
+        if self.complete:           # the next stream in the queue has started
+            self.complete = False
+            self.button.show()
+            self.pause_button.setVisible(self.pause_allowed)
+        step = STAGE_STEP.get(stage, round(self.step_index))    # an unknown stage never jumps back to the start
         if step != round(self.step_index):
             tween(self, "step_index", step, 420)
         self.stage, self.note = stage, note
@@ -380,7 +402,8 @@ class Pipeline(QWidget):
         current = round(self.step_index)
         for i, (label, icon) in enumerate(STEPS):
             c = QPointF(left + gap * i, y)
-            done, now = i < current, i == current
+            done = i < current or self.complete
+            now = i == current and not done
             if now:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(alpha(T.A2, 120 * (1 - self.pulse)))
@@ -597,6 +620,9 @@ class StreamsPage(QWidget):
     def show_menu(self, m, pos):
         m.exec(pos)
 
+    def ask(self, text):
+        return QMessageBox.question(self, PRODUCT_NAME, text)
+
     def pick_recent(self):
         dialog = RecentDialog(self.w, self.w.settings, self.w.library)
         dialog.chosen.connect(self.add_recent)
@@ -626,11 +652,37 @@ class StreamsPage(QWidget):
             self.w.toast("Added %d messages. Analyze again to use them." % len(rows))
 
     def remove(self, sid):
-        answer = QMessageBox.question(self, PRODUCT_NAME, "Remove this stream from the list?\n\n"
-                                      "Your recording and exported clips stay on disk.")
-        if answer == QMessageBox.StandardButton.Yes:
-            self.w.library.delete_session(sid)
-            self.refresh()
+        """Taking a stream off the list deletes it: the recording, its exported clips and the app's files for it."""
+        library = self.w.library
+        session = library.session(sid)
+        if session is None:
+            return
+        recordings, exports, own = cleanup.stream_files(library, sid)
+        clips = sum(1 for p in exports if p.lower().endswith(".mp4"))
+        what = []
+        if recordings:
+            what.append("the recording" if len(recordings) == 1 else "its %d recording parts" % len(recordings))
+        if clips:
+            what.append("%d exported clip%s" % (clips, "" if clips == 1 else "s"))
+        size = sum(cleanup.size_of(p) for p in recordings + exports)
+        detail = ("This also deletes %s (%s). They go to the Recycle Bin." % (" and ".join(what),
+                                                                               cleanup.size_text(size))
+                  if what else "Its files are already gone from disk.")
+        name = session["name"][:60]
+        if self.ask("Remove \"%s\" from the list?\n\n%s" % (name, detail)) != QMessageBox.StandardButton.Yes:
+            return
+        self.w.jobs.forget(sid, {c["id"] for c in library.clips(sid)})
+        if self.w.review.sid == sid:
+            self.w.review.close_stream()        # the preview player lets go of the recording before it is deleted
+        stuck = cleanup.discard(recordings + exports, fx_trash) + cleanup.discard(own)
+        library.delete_session(sid)
+        self.refresh()
+        if stuck:
+            self.w.toast("Removed. %d file%s could not be deleted because another app has %s open: %s" % (
+                len(stuck), "" if len(stuck) == 1 else "s", "it" if len(stuck) == 1 else "them",
+                os.path.basename(stuck[0])), "info")
+        else:
+            self.w.toast("Removed \"%s\"%s" % (name[:40], " and deleted its files" if what else ""))
 
 
 class MainWindow(QMainWindow):
@@ -645,7 +697,7 @@ class MainWindow(QMainWindow):
         self.closing = False
         self.jobs.progress.connect(self.on_progress)
         self.jobs.finished.connect(self.on_job_done)
-        self.jobs.idle.connect(lambda: self.streams.pipeline.close_panel())
+        self.jobs.idle.connect(lambda: self.streams.pipeline.complete or self.streams.pipeline.close_panel())
         self.jobs.idle.connect(self.install_when_free)
         MOTION.changed.connect(self.install_when_free)
         self.bridge = Bridge()
@@ -689,6 +741,7 @@ class MainWindow(QMainWindow):
         self.review.upgrade.connect(self.upgrade)
         self.review.compile.connect(self.compile_clips)
         self.review.find_kills.connect(lambda sid: self.jobs.add("kills", sid))
+        self.review.clip_removed.connect(lambda cid: self.jobs.forget(None, {cid}))
         self.review.say.connect(self.toast)
         self.settings_page = SettingsPage(self)
         for page in (self.streams, self.settings_page, self.review):
@@ -931,6 +984,8 @@ class MainWindow(QMainWindow):
             self.caption_note = note        # one more clip has its captions: show them without a full reload
             if self.stack.currentWidget() is self.review:
                 self.review.reload()
+        if job not in PANEL_JOBS:
+            return          # captions after an analysis must not look like the analysis starting over
         if self.streams.pipeline.t < .5 or self.streams.pipeline.title != session["name"]:
             self.streams.pipeline.open(session["name"])
         self.streams.pipeline.report(stage, value, note)
@@ -989,6 +1044,8 @@ class MainWindow(QMainWindow):
         elif "busy" in result:
             self.toast("This stream is already being processed", "info")
         else:
+            if "error" in result or "cancelled" in result:
+                self.streams.pipeline.close_panel()     # queued captions would otherwise leave it hanging open
             if "cancelled" in result:
                 self.library.update_session(target, status="stopped",
                                             error=STOPPED_ON_CLOSE if self.closing else STOPPED)
@@ -1003,7 +1060,10 @@ class MainWindow(QMainWindow):
                 self.gate.record_stream(session["duration"] or 0, target)
                 count = len(self.library.clips(target))
                 waiting = len(self.library.uncaptioned(target))
-                self.toast("%d clips ready from %s" % (count, session["name"][:40]) +
+                self.streams.pipeline.finish("%d clip%s ready" % (count, "" if count == 1 else "s") +
+                                             ("  ·  captions for %d more are written in the background" % waiting
+                                              if waiting else "  ·  open the stream to review them"))
+                self.toast("Analysis complete: %d clips ready from %s" % (count, session["name"][:40]) +
                            (". Captions for %d more are being written." % waiting if waiting else ""))
                 if waiting:
                     self.jobs.add("captions", target)

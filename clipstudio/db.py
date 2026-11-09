@@ -69,7 +69,7 @@ class Library:
             self.con.execute("UPDATE sessions SET %s WHERE id=?" % names, (*fields.values(), sid))
 
     def delete_session(self, sid):
-        """Removes the library entry only. The recording belongs to the streamer and stays on disk."""
+        """Removes the library entry. Its files are deleted by the caller first (cleanup.stream_files)."""
         with self.con:
             self.con.execute("DELETE FROM sessions WHERE id=?", (sid,))
 
@@ -186,6 +186,15 @@ class Library:
             self.con.execute("UPDATE clips SET end=? WHERE id=?", (second["end"], cid))
             self.con.execute("DELETE FROM clips WHERE id=?", (other,))
             self.con.execute("UPDATE clips SET rank=rank-1 WHERE session=? AND rank>?", (first["session"], second["rank"]))
+
+    def delete_clip(self, cid):
+        """Takes a clip off the list. The ones after it move up, so ranks stay a plain 1, 2, 3."""
+        c = self.clip(cid)
+        if c is None:
+            return
+        with self.con:
+            self.con.execute("DELETE FROM clips WHERE id=?", (cid,))
+            self.con.execute("UPDATE clips SET rank=rank-1 WHERE session=? AND rank>?", (c["session"], c["rank"]))
 
     def update_clip(self, cid, **fields):
         for key in ("words", "edit"):

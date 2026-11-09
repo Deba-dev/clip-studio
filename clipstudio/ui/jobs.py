@@ -149,6 +149,14 @@ class Jobs(QObject):
             self.queue.insert(spot, (job, target))
         self._next()
 
+    def forget(self, sid, clip_ids=()):
+        """A stream is being removed: its waiting jobs go, and one already running on it is stopped."""
+        mine = lambda job, target: (target == sid and job != "export") or (job == "export" and target in clip_ids)
+        self.queue = deque(entry for entry in self.queue if not mine(*entry))
+        if self.current and mine(*self.current) and self.proc:
+            self._kill()
+            self.proc.waitForFinished(3000)
+
     def busy(self):
         return self.proc is not None
 

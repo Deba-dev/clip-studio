@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QGridLayout, QH
                                QMessageBox, QPlainTextEdit, QScrollArea, QSlider, QSplitter, QStackedWidget,
                                QVBoxLayout, QWidget)
 
+from .. import cleanup
 from .. import edit as clip_edit
 from .. import effects
 from .. import games
@@ -27,13 +28,16 @@ from . import theme as T
 from .audio import PreviewAudio
 from .cards import ClipCard, clock
 from .facecam import FacecamDialog
-from .fx import Button, IconButton, Segmented, Toggle
+from .fx import Button, IconButton, Segmented, Toggle, to_trash
 from .phone import Phone
 from .timeline import StreamMap, TrimBar
 
 LAYOUTS = [("Auto", "auto"), ("Webcam + game", "stack"), ("Full frame", "blur"), ("Centre crop", "crop")]
 FILTERS = [("All", ""), ("Funny", "funny"), ("Kills", "kills"), ("Deaths", "deaths"), ("Hype", "hype")]
 TABS = [("Clip", "clip"), ("Audio", "audio"), ("Captions", "captions"), ("Look", "look")]
+SCOPES = [("This clip", "one"), ("All clips", "all")]
+# What "All clips" carries to every clip. Cuts, mutes, length, name, hook and caption words are each clip's own.
+SHARED_EDIT = {"auto_loud", "gain_db", "fade_in", "fade_out", "pan", "zoom", "tally", "caption_style"}
 SPEEDS = [("0.5x", "0.5"), ("1x", "1"), ("1.5x", "1.5"), ("2x", "2")]
 COLORS = ("FFE100", "FFFFFF", "34D399", "F87171", "60A5FA", "F472B6")
 FRAME = 1 / 30
@@ -186,6 +190,7 @@ class ReviewPage(QWidget):
     upgrade = Signal(str)       # a Premium feature or a used-up free cap
     compile = Signal(int, list, str)    # session, clip ids, title
     find_kills = Signal(int)            # session: learn the marked kills and find every one
+    clip_removed = Signal(int)          # clip: about to be deleted, so its waiting export is dropped
 
     def __init__(self, library, settings=None):
         super().__init__()
@@ -284,6 +289,14 @@ class ReviewPage(QWidget):
         self.player.mediaStatusChanged.connect(self.media_ready)
         self.player.playbackStateChanged.connect(self.on_playing)
 
+        self.scope = Segmented(SCOPES)
+        self.scope.setToolTip("All clips: sound, caption style, layout, zoom and kill counter changes go to every "
+                              "clip of this stream. Cuts, length, name, hook and caption words stay per clip.")
+        self.scope.changed.connect(lambda _: self.show_scope())
+        self.scope_note = QLabel("")
+        self.scope_note.setObjectName("mute")
+        self.scope_note.setWordWrap(True)
+        self.scope_note.hide()
         self.tabs = Segmented(TABS)
         self.tabs.changed.connect(lambda v: self.pages.setCurrentIndex([t[1] for t in TABS].index(v)))
         self.pages = QStackedWidget()
@@ -298,15 +311,24 @@ class ReviewPage(QWidget):
         self.open_file = Button("", "folder")
         self.open_file.setToolTip("Show the exported file")
         self.open_file.clicked.connect(self.show_file)
+        self.remove_button = Button("", "trash")
+        self.remove_button.setToolTip("Remove this clip from the list and delete its exported video")
+        self.remove_button.clicked.connect(self.remove_clip)
         acts = QHBoxLayout()
         acts.setSpacing(0)
-        for w in (self.keep_button, self.skip, self.export_one, self.open_file):
+        for w in (self.keep_button, self.skip, self.export_one, self.open_file, self.remove_button):
             acts.addWidget(w)
         acts.addStretch()
         self.side = QWidget()
         side = QVBoxLayout(self.side)
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(6)
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(8)
+        scope_row.addWidget(QLabel("Settings for"))
+        scope_row.addWidget(self.scope, 1)
+        side.addLayout(scope_row)
+        side.addWidget(self.scope_note)
         side.addWidget(self.tabs)
         side.addWidget(self.pages, 1)
         side.addLayout(acts)
@@ -873,6 +895,9 @@ class ReviewPage(QWidget):
         self.sid = sid
         self.undo_stack = []
         self.redo_stack = []
+        if self.all_clips():        # a new stream starts on single-clip changes, so nothing spreads by surprise
+            self.scope.set("one")
+        self.show_scope()
         session = self.library.session(sid)
         self.title.setText(self.title.fontMetrics().elidedText(session["name"], Qt.TextElideMode.ElideRight, 520))
         self.loading = True
@@ -1082,7 +1107,46 @@ class ReviewPage(QWidget):
 
     def set_edit(self, **values):
         if self.clip and not self.loading:
-            self.change(edit={**self.clip["edit"], **values})
+            if self.all_clips() and set(values) <= SHARED_EDIT:
+                self.change_all(edit=values)
+            else:
+                self.change(edit={**self.clip["edit"], **values})
+
+    # ---- all clips at once
+    def all_clips(self):
+        return self.scope.value() == "all"
+
+    def show_scope(self):
+        count = len(self.library.clips(self.sid)) if self.sid else 0
+        self.scope_note.setText("Changes below go to all %d clips of this stream. Cuts, length, name, hook and "
+                                "caption words stay per clip." % count)
+        self.scope_note.setVisible(self.all_clips())
+
+    def change_all(self, edit=None, **fields):
+        """One change on every clip of the stream, undone in one step."""
+        if not self.clip:
+            return
+        if edit and "caption_style" in edit:
+            if self.gate and not self.gate.allowed("style_all", self.sid):
+                self.upgrade.emit("style_all")
+                self.show_clip()            # the controls go back to what the clip really has
+                return
+            if self.gate:
+                self.gate.use("style_all", self.sid)
+            if self.settings:
+                self.settings.set("caption_style_default", edit["caption_style"])
+        entries = []
+        for c in self.library.clips(self.sid):
+            new = dict(fields)
+            if edit:
+                new["edit"] = {**c["edit"], **edit}
+            entries.append((c["id"], {k: c[k] for k in new}))
+            self.library.update_clip(c["id"], **new)
+        self.undo_stack.append(("many", entries))
+        self.redo_stack.clear()
+        self.clip = self.library.clip(self.clip["id"])
+        self.reload()
+        self.show_clip()
 
     def restore(self, source, target):
         """Moves one edit from one stack to the other, returning the clip to how it was."""
@@ -1091,6 +1155,19 @@ class ReviewPage(QWidget):
         entry = source.pop()
         if entry[0] == "split":
             self.flip_split(entry, target)
+            return
+        if entry[0] == "many":
+            back = []
+            for cid, fields in entry[1]:
+                current = self.library.clip(cid)
+                if current is not None:
+                    back.append((cid, {k: current[k] for k in fields}))
+                    self.library.update_clip(cid, **fields)
+            target.append(("many", back))
+            if self.clip:
+                self.clip = self.library.clip(self.clip["id"])
+            self.reload()
+            self.show_clip()
             return
         cid, fields = entry
         current = self.library.clip(cid)
@@ -1186,7 +1263,9 @@ class ReviewPage(QWidget):
 
     def layout_changed(self, value):
         self.phone.set_layout(value)
-        if not self.loading and self.clip and value != self.clip["layout"]:
+        if not self.loading and self.clip and self.all_clips():
+            self.change_all(layout=value)
+        elif not self.loading and self.clip and value != self.clip["layout"]:
             self.change(layout=value)
 
     def words_typed(self):
@@ -1381,6 +1460,75 @@ class ReviewPage(QWidget):
 
     def burst_origin(self, root):
         return self.phone.mapTo(root, QPointF(self.phone.width() / 2, self.phone.height() * .55).toPoint())
+
+    def remove_clip(self):
+        """Takes the clip off the list for good: its exported video and preview picture are deleted too."""
+        if not self.clip:
+            return
+        c = self.clip
+        if c["id"] in self.exporting:
+            self.say.emit("This clip is being exported. Remove it once the export is done.", "info")
+            return
+        files = cleanup.clip_files(self.library, c)
+        videos = [f for f in files if f.lower().endswith((".mp4", ".txt"))]
+        exported = [f for f in videos if f.lower().endswith(".mp4")]
+        text = "Remove this clip from the list?"
+        if exported:
+            text += ("\n\nIts exported video (%s) is deleted too. It goes to the Recycle Bin."
+                     % os.path.basename(exported[0]))
+        if self.ask(text) != QMessageBox.StandardButton.Yes:
+            return
+        self.save_timer.stop()
+        self.clip_removed.emit(c["id"])
+        stuck = cleanup.discard(videos, to_trash)
+        cleanup.discard([f for f in files if f not in videos])
+        self.library.delete_clip(c["id"])
+        self.forget_undo(c["id"])
+        row = self.row
+        self.clip = None
+        self.row = -1
+        self.build_cards()
+        self.map.clips = self.library.clips(self.sid)
+        self.map.update()
+        self.show_scope()
+        if self.cards:
+            self.select(min(row, len(self.cards) - 1))
+        else:
+            self.player.stop()
+        if stuck:
+            self.say.emit("Removed. %s is open in another app, so it stays on disk." % os.path.basename(stuck[0]),
+                          "info")
+        else:
+            self.say.emit("Clip removed" + (" and its video deleted" if exported else ""), "good")
+
+    def ask(self, text):
+        return QMessageBox.question(self, "Clip Studio", text)
+
+    def forget_undo(self, cid):
+        """Undo steps for a clip that no longer exists can only fail."""
+        def keep(e):
+            if e[0] == "split":
+                return cid not in (e[1], e[2])
+            if e[0] == "many":
+                e[1][:] = [x for x in e[1] if x[0] != cid]
+                return bool(e[1])
+            return e[0] != cid
+        self.undo_stack = [e for e in self.undo_stack if keep(e)]
+        self.redo_stack = [e for e in self.redo_stack if keep(e)]
+
+    def close_stream(self):
+        """The stream is being removed: let go of its recording and forget its clips."""
+        self.save_timer.stop()
+        self.player.stop()
+        self.player.setSource(QUrl())
+        for card in self.cards:
+            card.deleteLater()
+        self.cards = []
+        self.clip = None
+        self.row = -1
+        self.sid = None
+        self.undo_stack = []
+        self.redo_stack = []
 
     def show_file(self):
         if self.clip and self.clip["exported"]:
