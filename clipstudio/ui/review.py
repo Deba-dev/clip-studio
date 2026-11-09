@@ -15,6 +15,7 @@ from .. import cleanup
 from .. import edit as clip_edit
 from .. import effects
 from .. import games
+from .gamepicker import GamePicker
 from .. import teach
 from .. import view
 from .. import media
@@ -226,14 +227,12 @@ class ReviewPage(QWidget):
         self.make_compilation = Button("Make a compilation", "film")
         self.make_compilation.setToolTip("Joins the kept clips you can see (use the filter for, say, only kills) into one video")
         self.make_compilation.clicked.connect(self.compilation)
-        self.game_box = QComboBox()
-        self.game_box.addItem("Game: not set", "")
-        for key, g in games.GAMES.items():
-            self.game_box.addItem(g["name"], key)
-        self.game_box.setToolTip("This stream's game. Valorant is read from its HUD; other games learn your kill "
-                                 "notice from kills you mark.")
-        self.game_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.game_box.currentIndexChanged.connect(lambda _: self.game_changed())
+        self.game_box = GamePicker("Game: not set", "This stream's game, or what kind of stream it is (podcast, "
+                                   "Just Chatting, IRL). Valorant is read from its HUD; games with a kill notice "
+                                   "learn it from kills you mark; everything else is clipped from your voice, "
+                                   "laughter and chat.")
+        self.game_box.setMinimumWidth(210)
+        self.game_box.changed.connect(lambda _: self.game_changed())
         self.reader_line = QLabel("")
         self.reader_line.setObjectName("mute")
         self.reader_line.setWordWrap(True)
@@ -502,13 +501,14 @@ class ReviewPage(QWidget):
         col.addWidget(self.post_tags)
         col.addWidget(self.post_copy, 0, Qt.AlignmentFlag.AlignLeft)
         col.addSpacing(4)
-        col.addWidget(self.heading("Teach a kill"))
+        self.teach_head = self.heading("Teach a kill")
+        col.addWidget(self.teach_head)
         self.teach_note = QLabel("")
         self.teach_note.setObjectName("mute")
         self.teach_note.setWordWrap(True)
-        mark = Button("This frame shows my kill", "skull")
-        mark.setToolTip("Pause where your kill notice is on screen (the banner, the skull, \"knocked out\"), then "
-                        "press this. Two or three kills are enough; each one makes it better.")
+        mark = self.mark_button = Button("This frame shows my kill", "skull")
+        mark.setToolTip("Pause where your kill notice is on screen (the banner, the skull, \"knocked out\", "
+                        "GOAL, K.O.), then press this. Two or three are enough; each one makes it better.")
         mark.clicked.connect(self.mark_kill)
         self.find_button = Button("Find every kill", "target")
         self.find_button.clicked.connect(self.find_every_kill)
@@ -536,17 +536,32 @@ class ReviewPage(QWidget):
         key = self.game_key()
         if not key:
             self.teach_note.setText("Choose this stream's game at the top first.")
+            self.teach_head.setText("Teach a kill")
+            for w in (self.mark_button, self.find_button):
+                w.setVisible(True)
             self.find_button.setEnabled(False)
             return
         name = games.name_of(key)
+        word = games.notice_word(key)
+        teachable = bool(word)
+        for w in (self.mark_button, self.find_button):
+            w.setVisible(teachable)
+        self.teach_head.setText("Teach a " + (word or "kill"))
+        if not teachable:
+            self.teach_note.setText(games.no_notice(key) + " Mark any moment you want as a clip.")
+            return
+        plural = games.GAMES[key]["plural"]
+        self.mark_button.setText("This frame shows my " + word)
+        self.find_button.setText("Find every " + word)
         count = len(teach.examples(key))
         learned = teach.load(key) is not None
         if count < teach.MIN_EXAMPLES:
-            text = ("Pause on a frame where your %s kill notice is showing and press the button. %d of %d marked." %
-                    (name, count, teach.MIN_EXAMPLES))
+            text = ("Pause on a frame where your %s %s notice is showing and press the button. %d of %d marked." %
+                    (name, word, count, teach.MIN_EXAMPLES))
         else:
-            text = ("%d %s kills marked%s. Find every kill learns from them and adds a clip for every fight, here and "
-                    "on every %s stream after this one." % (count, name, ", already learned" if learned else "", name))
+            text = ("%d %s %s marked%s. Find every %s learns from them and adds a clip for each, here and on every "
+                    "%s stream after this one." % (count, name, plural, ", already learned" if learned else "", word,
+                                                  name))
         if key == "valorant":
             text = "Valorant is read from its HUD, no teaching needed. Teaching still helps a stream it could not read. " + text
         self.teach_note.setText(text)
@@ -565,14 +580,15 @@ class ReviewPage(QWidget):
         t = self.player.position() / 1000
         count = teach.add_example(key, session["source"], t, vf)
         self.show_teach()
-        self.say.emit("Kill %d marked at %s" % (count, clock(t)[2:]), "good")
+        self.say.emit("%s %d marked at %s" % ((games.notice_word(key) or "kill").capitalize(), count, clock(t)[2:]),
+                      "good")
 
     def find_every_kill(self):
         if self.sid:
             self.find_button.set_busy(True)
             self.find_kills.emit(self.sid)
-            self.say.emit("Learning your kill, then looking through the whole stream. It runs in the background.",
-                          "good")
+            self.say.emit("Learning your %s, then looking through the whole stream. It runs in the background." %
+                          (games.notice_word(self.game_key()) or "kill"), "good")
 
     def allowed(self, feature):
         return self.gate is None or self.gate.allowed(feature)
@@ -901,8 +917,7 @@ class ReviewPage(QWidget):
         session = self.library.session(sid)
         self.title.setText(self.title.fontMetrics().elidedText(session["name"], Qt.TextElideMode.ElideRight, 520))
         self.loading = True
-        key = games.key_of(session["game"])
-        self.game_box.setCurrentIndex(max(self.game_box.findData(key), 0))
+        self.game_box.set(games.key_of(session["game"]))
         self.loading = False
         try:
             seen = json.loads(session["report"] or "{}")

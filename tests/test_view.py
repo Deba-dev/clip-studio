@@ -74,7 +74,15 @@ def test_stream_titles_name_their_game():
     assert games.guess("PUBG Mobile scrims") == "bgmi"
     assert games.guess("PUBG PC chicken dinner") == "pubg"
     assert games.guess("COD Mobile ranked") == "codm"
-    assert games.guess("Just chatting") == ""
+    assert games.guess("Just chatting") == "justchatting"
+    assert games.guess("chill stream with bhai") == ""
+    assert games.guess("GTA San Andreas full story") == "gtasa"
+    assert games.guess("GTA 5 RP live") == "gta5"
+    assert games.guess("Counter-Strike 1.6 nostalgia") == "cs16"
+    assert games.guess("Phasmophobia horror game with friends") == "phasmo"
+    assert games.guess("Valorant podcast with the squad") == "valorant"
+    assert games.guess("Ep 12 | podcast with bhai") == "podcast"
+    assert games.guess("FC 26 ultimate team") == "eafc"
 
 
 def test_every_game_names_its_multi_kills():
@@ -82,7 +90,26 @@ def test_every_game_names_its_multi_kills():
     assert games.multi_name("cs2", 3) == "3K"
     assert games.multi_name("apex", 3) == "Squad wipe"
     assert games.multi_name("bgmi", 7) == "7 kills"
-    assert len(games.GAMES) == 10
+    assert games.multi_name("eafc", 3) == "Hat-trick"
+    assert games.multi_name("tekken", 2) == "2 K.O.s"
+
+
+def test_every_kind_of_stream_is_listed_once():
+    names = [g["name"] for g in games.GAMES.values()]
+    assert len(names) == len(set(names)) and len(names) > 100
+    assert all(g["kind"] in games.KINDS for g in games.GAMES.values())
+    listed = [k for _, entries in games.grouped() for k, _ in entries]
+    assert sorted(listed) == sorted(games.GAMES)
+    assert games.taught("cs2") and games.taught("eafc") and not games.taught("valorant")
+    assert not games.taught("gta5") and not games.taught("podcast")
+    assert games.is_game("minecraft") and not games.is_game("podcast")
+    assert all(games.key_of(g["name"]) == k for k, g in games.GAMES.items())
+
+
+def test_streams_without_a_notice_say_where_clips_come_from():
+    assert "voice" in games.no_notice("podcast")
+    assert games.describe({"reader": "none", "why": games.no_notice("gta5")}).startswith("GTA V has no kill notice")
+    assert "goals" in games.describe({"reader": "taught", "game": "EA Sports FC", "kills": 3})
 
 
 def test_the_report_says_why_no_kills_were_read():

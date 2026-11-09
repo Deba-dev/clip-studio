@@ -57,8 +57,14 @@ def game_view(library, sid, source, info):
 
 
 def which_game(settings, session):
-    """The stream's own game if it has one, then the main game in Settings, then whatever the title names."""
-    return games.key_of(session["game"]) or games.key_of(settings.get("game")) or games.guess(session["name"])
+    """The stream's own game if it has one, then a game the title names, then the main game in Settings, then a
+    stream that is not a game ("podcast", "just chatting") named in the title.
+
+    A title like "chill stream" is not enough to stop reading the main game's HUD: run() falls back to the title's
+    kind of stream only when the HUD is not on screen."""
+    named = games.guess(session["name"])
+    return (games.key_of(session["game"]) or (named if games.is_game(named) else "")
+            or games.key_of(settings.get("game")) or named)
 
 
 def read_game(source, info, report, vf="scale=1920:1080", k=1):
@@ -255,6 +261,9 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
         if game:
             key = "valorant"
             seen["reader"] = "valorant"
+        elif not games.key_of(session["game"]) and games.guess(session["name"]) in games.GAMES:
+            key = games.guess(session["name"])      # no Valorant HUD, and the title says a podcast, IRL...
+            seen["game"] = games.name_of(key)
     report("Finding moments", 0.5)
     parts = detect.score_moments(loud, library.chat(sid), library.markers(sid), info["duration"],
                                  lag=session["chat_lag"])
@@ -283,9 +292,12 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
         kills = teach.scan(source, vf, lesson, spans, lambda v: report("Finding your kills", v))
         moments += detect.fight_moments(kills, lanes, info["duration"], key)
         seen.update(reader="taught", kills=len(kills), why="")
+    elif key and not games.taught(key):
+        seen.update(reader="none", why=games.no_notice(key))
     elif key and key != "valorant":
-        seen["why"] = ("%s is read from a kill notice you teach it once: pause on two of your kills in the review "
-                       "desk and press This frame shows my kill." % games.name_of(key))
+        word = games.notice_word(key)
+        seen["why"] = ("%s is read from a %s notice you teach it once: pause on two of them in the review desk and "
+                       "press This frame shows my %s." % (games.name_of(key), word, word))
     weights = wanted(settings)
     picks = detect.select(moments, first, weights)          # the best, with a mix of kinds: captioned now
     rest = [m for m in detect.select(moments, ALL_MOMENTS, weights)

@@ -7,12 +7,12 @@ nothing is lost by leaving the page. Folders are the exception: picking one save
 """
 import os
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QLinearGradient, QPainter, QPen, QShortcut, QFont
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                                QSlider, QSpinBox, QVBoxLayout, QWidget)
 
-from .. import games
+from .gamepicker import GamePicker
 from ..paths import exports_dir
 from ..version import VERSION
 from . import theme as T
@@ -75,109 +75,6 @@ class FolderRow(QWidget):
     def set(self, path):
         self.load(path)
         self.changed.emit(path)
-
-
-class GameChips(QWidget):
-    """Choices as tiles in a grid. The chosen tile lights up and gets a check; hovering lifts a tile."""
-    changed = Signal(str)
-    COLS = 4
-    HEIGHT = 46
-
-    def __init__(self, options):
-        super().__init__()
-        self.options = options              # [(label, value, icon)]
-        self.current = options[0][1]
-        self.lit = [1.0 if i == 0 else 0.0 for i in range(len(options))]
-        self.hot = [0.0] * len(options)
-        self.hovered = -1
-        self.setMouseTracking(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        rows = (len(options) + self.COLS - 1) // self.COLS
-        self.setMinimumHeight(rows * (self.HEIGHT + 8))
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFont(font(13, QFont.Weight.Medium))
-
-    def sizeHint(self):
-        return QSize(640, self.minimumHeight())
-
-    def value(self):
-        return self.current
-
-    def set(self, value):
-        for i, (_, v, _) in enumerate(self.options):
-            self.animate(i, "lit", 1.0 if v == value else 0.0, 220)
-        self.current = value if any(v == value for _, v, _ in self.options) else self.options[0][1]
-        self.update()
-
-    def animate(self, i, which, end, ms):
-        """Each tile keeps its own animated values; the tween machinery animates one attribute per name."""
-        name = "_%s_%d" % (which, i)
-        setattr(self, name, getattr(self, which)[i])
-
-        def apply():
-            getattr(self, which)[i] = getattr(self, name)
-
-        tween(self, name, end, ms, QEasingCurve.Type.OutCubic, on_step=apply)
-        apply()
-
-    def cell(self, i):
-        w = (self.width() - (self.COLS - 1) * 8) / self.COLS
-        r, c = divmod(i, self.COLS)
-        return QRectF(c * (w + 8), r * (self.HEIGHT + 8), w, self.HEIGHT)
-
-    def at(self, pos):
-        return next((i for i in range(len(self.options)) if self.cell(i).contains(pos)), -1)
-
-    def mouseMoveEvent(self, event):
-        i = self.at(event.position())
-        if i != self.hovered:
-            if self.hovered >= 0:
-                self.animate(self.hovered, "hot", 0.0, 220)
-            if i >= 0:
-                self.animate(i, "hot", 1.0, 140)
-            self.hovered = i
-
-    def leaveEvent(self, event):
-        if self.hovered >= 0:
-            self.animate(self.hovered, "hot", 0.0, 220)
-        self.hovered = -1
-
-    def mousePressEvent(self, event):
-        i = self.at(event.position())
-        if i >= 0 and self.options[i][1] != self.current:
-            self.set(self.options[i][1])
-            self.changed.emit(self.current)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setFont(self.font())
-        for i, (label, _, icon) in enumerate(self.options):
-            r = self.cell(i).adjusted(1, 1 - 2 * self.hot[i], -1, -1 - 2 * self.hot[i])
-            lit, hot = self.lit[i], self.hot[i]
-            if lit > .01 or hot > .01:
-                glow(p, r, 10, T.A2, max(lit * 1.2, hot * .7), 6)
-            p.setBrush(mix(QColor(18, 12, 44, 220), QColor(40, 26, 92, 240), max(hot * .6, lit * .5)))
-            p.setPen(QPen(mix(alpha(T.A1, 70), T.A2, lit), 1 + lit))
-            p.drawRoundedRect(r, 10, 10)
-            if lit > .01:
-                g = QLinearGradient(r.topLeft(), r.bottomRight())
-                g.setColorAt(0, alpha(T.A1, 90 * lit))
-                g.setColorAt(1, alpha(T.A2, 60 * lit))
-                p.setBrush(QBrush(g))
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawRoundedRect(r, 10, 10)
-            draw_icon(p, icon, QRectF(r.x() + 12, r.center().y() - 8, 16, 16), mix(T.MUTE, T.TEXT, max(lit, hot)))
-            p.setPen(mix(T.MUTE, T.TEXT, max(lit, hot)))
-            text = p.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, int(r.width() - 66))
-            p.drawText(QRectF(r.x() + 36, r.y(), r.width() - 60, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
-            if lit > .01:          # a check that pops in on the chosen tile
-                s = 14 * min(lit * 1.15, 1.0)
-                c = QPointF(r.right() - 18, r.center().y())
-                p.setBrush(T.A2)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.drawEllipse(c, s / 1.4 + 1, s / 1.4 + 1)
-                draw_icon(p, "check", QRectF(c.x() - s / 2, c.y() - s / 2, s, s), T.TEXT, 2.2)
 
 
 class Row(QWidget):
@@ -517,8 +414,7 @@ class SettingsPage(QWidget):
         self.caption_mode = QComboBox()
         self.caption_mode.addItem("Same language as spoken", "spoken")
         self.caption_mode.addItem("Translate to English", "english")
-        self.game = GameChips([("Find it by itself", "", "spark")] +
-                              [(g["name"], key, "target") for key, g in games.GAMES.items()])
+        self.game = GamePicker("Find it by itself")
         self.wants, self.want_labels = {}, {}
         for key in ("funny", "kills", "deaths", "hype"):
             slider = QSlider(Qt.Orientation.Horizontal)
@@ -581,10 +477,12 @@ class SettingsPage(QWidget):
             row.addWidget(self.want_labels[key])
             return box
 
-        game = Card("Game", "target", "Valorant is read straight from its HUD. Other games learn your kill notice "
-                                      "once: mark two of your kills in the review desk.")
-        game.add("Main game", "Used when a stream's title does not name its game. Each stream can still be changed "
-                              "in the review desk.", self.game, wide=True)
+        game = Card("Game", "target", "Valorant is read straight from its HUD. Shooters, MOBAs, football and "
+                                      "fighting games learn your kill, goal or K.O. notice once: mark two in the "
+                                      "review desk. Story games, old classics, podcasts, Just Chatting and IRL "
+                                      "streams are clipped from your voice, laughter and chat.")
+        game.add("Main game", "Used when a stream's title does not name its game or kind of stream. Each stream can "
+                              "still be changed in the review desk.", self.game, wide=True)
         clips = Card("Clips", "film", "What gets clipped, and how much of it is ready the moment analysis finishes.")
         for key, title, hint in (("kills", "Kills and clutches", "Every round with your kills, named Kill to Ace"),
                                  ("deaths", "Deaths", "Every death; the ones you react to rank first"),

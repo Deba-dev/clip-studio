@@ -7,6 +7,7 @@ holds attention, and a moment that stood out from the rest of the stream. It is 
 import re
 
 from . import edit as clip_edit
+from . import games as game_list
 from .games import GAMES
 from .roman import to_roman
 
@@ -17,6 +18,8 @@ KIND_TAGS = {"kills": ["#clutch", "#headshot"], "funny": ["#funny", "#funnymomen
              "hype": ["#hype"], "marked": ["#highlights"]}
 LANGUAGE_TAGS = {"hi": ["#hindi", "#hinglish", "#indiangamer"], "bn": ["#bengali", "#indiangamer"],
                  "en": ["#gamer"]}
+STREAM_TAGS = {"funny": ["#funny", "#funnymoments"], "hype": ["#viral"], "marked": ["#highlights"]}
+STREAM_LANGUAGE_TAGS = {"hi": ["#hindi", "#hinglish"], "bn": ["#bengali"], "en": []}
 TEMPLATES = {
     "kills": ["This clutch was insane", "One tap. No mercy", "How did I hit that?"],
     "funny": ["I couldn't stop laughing", "Bhai ye kya tha", "We are not okay"],
@@ -85,11 +88,16 @@ def label(score):
 
 
 def hashtags(clip, game="", language=""):
-    tags = ["#shorts", "#gaming"]
+    key = game_list.key_of(game)
+    playing = not key or game_list.is_game(key)       # podcasts, IRL and Just Chatting are not #gaming
+    tags = ["#shorts"] + (["#gaming"] if playing else [])
     tags += GAME_TAGS.get(game, ["#" + re.sub(r"\W", "", game.lower())] if game else [])
+    kind_tags = KIND_TAGS if playing else STREAM_TAGS
+    kills_read = not key or game_list.notice_word(key) == "kill"
     for kind in (clip.get("tags") or [])[:2]:
-        tags += KIND_TAGS.get(kind, [])
-    tags += LANGUAGE_TAGS.get(language, [])
+        if kind != "kills" or kills_read:
+            tags += kind_tags.get(kind, [])
+    tags += (LANGUAGE_TAGS if playing else STREAM_LANGUAGE_TAGS).get(language, [])
     seen, out = set(), []
     for t in tags:
         if t not in seen and len(t) > 1:
@@ -106,6 +114,9 @@ def titles(clip, game=""):
     if 2 <= len(spoken.split()) <= 9:
         out.append(spoken[0].upper() + spoken[1:] + (" 😳" if "funny" not in (clip.get("tags") or []) else " 💀"))
     kind = (clip.get("tags") or ["hype"])[0]
+    key = game_list.key_of(game)
+    if kind in ("kills", "deaths") and key and game_list.notice_word(key) != "kill":
+        kind = "hype"       # a goal or a K.O. is not "One tap", and a podcast has no deaths
     options = TEMPLATES.get(kind, TEMPLATES["hype"])
     turn = int(clip.get("id") or clip.get("rank") or 0)       # neighbouring clips start on different ideas
     for i in range(len(options)):

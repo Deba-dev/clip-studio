@@ -155,3 +155,11 @@ def test_real_export_with_a_kill_tally(tmp_path):
     c = clip(0.0, 4.0, events=[{"t": 1.0, "kind": "kill"}, {"t": 2.0, "kind": "kill"}])
     path = render.export_clip(str(video), c, (640, 360), str(tmp_path), out=(720, 1280), game="BGMI")
     assert path.endswith(".mp4")
+
+
+def test_podcast_clips_are_not_tagged_as_gaming():
+    clip = {"tags": ["funny", "kills"], "start": 0}
+    tags = insights.hashtags(clip, "Podcast", "hi")
+    assert "#gaming" not in tags and "#headshot" not in tags and "#podcast" in tags
+    assert "#headshot" in insights.hashtags(clip, "Valorant", "hi")
+    assert "#headshot" not in insights.hashtags(clip, "EA Sports FC", "en")

@@ -1,13 +1,16 @@
-Clip Studio 0.7.4 finds far more of your kills, writes captions in the Hinglish you actually speak, and works with every stream layout. It includes everything from 0.7.3.
+Clip Studio 0.7.5 clips any stream: more than 90 games, from new releases to old classics, plus podcasts, Just Chatting, IRL and more. It includes everything from 0.7.4.
 
 ## New in this version
 
-- **Kills with any weapon skin:** skins replace the white skull with their own kill banner (an eye, a crest, an X diamond...). These kills used to count as your teammate's. Clip Studio now recognises any kill banner. On a real 3-hour stream, kills found went from 15 to 29.
-- **Low-quality and downloaded streams:** a 360p or 720p download from YouTube used to show no players in Valorant's top bar, so no kills were found at all. It is now read as well as a 1080p recording.
-- **No kill is lost:** a fight where an enemy went down while you were alive becomes a clip even when the kill banner was hidden by smoke or an ability. It ranks below your own kills, and you decide what to keep.
-- **Captions in Hinglish, not English:** captions were often translated into English ("The fiend has hit, brother") or missing during fights. They now follow what you say ("dushman ko lag gaya bhai"), and Hindi words are spelled the way people type them ("dekhta", "isko").
-- **Faster captions:** speech is recognised once per stream, so overlapping clips no longer read the same audio again. Your kills are also checked several at a time.
-- **Every layout:** horizontal or vertical, with or without a webcam. A vertical stream with no webcam band hides Valorant's top bar, so kills are read from the kill banner alone. A vertical recording is exported whole, so your face no longer shows twice.
+- **More than 90 games:** shooters, battle royales and MOBAs (Rainbow Six Siege, Marvel Rivals, League of Legends, Dota 2, Mobile Legends...), story games (GTA V, Red Dead Redemption 2, Elden Ring, God of War, Spider-Man...), old classics (GTA San Andreas, Vice City, Project IGI, CS 1.6, NFS Most Wanted, Road Rash...), horror and party games, Minecraft and Roblox, football, cricket, racing and fighting games.
+- **Podcasts and every kind of stream:** Podcast, Just Chatting, IRL, reactions and watch-alongs, music, art, coding, cooking and more. They are clipped from your voice, laughter and chat, and get their own hashtags instead of #gaming.
+- **Teach more than kills:** football games learn your **goal** (Goal, Brace, Hat-trick), soulslikes your **boss win**, fighting games your **K.O.**
+- **The stream's title decides:** "GTA San Andreas" is San Andreas, not GTA V. A title naming another game wins over your main game in Settings.
+- **A searchable game list:** type "gta" or "podcast" in Settings or the review desk.
+
+From 0.7.4:
+
+- **Kills with any weapon skin**, **360p and 720p downloads read**, **captions in Hinglish, not English**, **faster captions**, and **every stream layout**.
 
 From 0.7.3 and 0.7.2:
 
