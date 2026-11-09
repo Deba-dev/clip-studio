@@ -1,6 +1,10 @@
-Clip Studio 0.7.2 says clearly when an analysis is done, lets you change settings for all clips at once, and deletes a stream's or clip's files when you remove it.
+Clip Studio 0.7.3 keeps updates working when GitHub's download link is down, and includes everything from 0.7.2: a clear "Analysis complete", settings for all clips at once, and removing a stream or clip deletes its files.
 
 ## New in this version
+
+- **Updates get through when GitHub is struggling:** if GitHub's normal download link fails (as it did on 9 November with "HTTP Error 504"), the update retries and then downloads the same installer through GitHub's other route. It is still checked against its fingerprint before it runs. If GitHub is fully down, the message now says so and asks you to try again later.
+
+From 0.7.2:
 
 - **"Analysis complete":** when a stream is done, the progress panel ticks every step and says how many clips are ready, then slides away. Before, the captions written in the background afterwards made the panel jump back to the start, so it looked like the analysis was running again.
 - **Settings for all clips:** a new **This clip / All clips** switch in the review desk. With All clips on, sound (volume, loudness, fades), caption style, layout, crop position, zoom and the kill counter change on every clip of the stream at once, and one undo takes it back. Cuts, length, name, hook and caption words stay per clip.
