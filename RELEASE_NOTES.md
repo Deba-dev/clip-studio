@@ -1,12 +1,14 @@
-Clip Studio 0.7.5 clips any stream: more than 90 games, from new releases to old classics, plus podcasts, Just Chatting, IRL and more. It includes everything from 0.7.4.
+Clip Studio 0.7.6 has its own look: warm **Film suite** by default, or **Midnight gold** if you prefer. It includes everything from 0.7.5.
 
 ## New in this version
 
-- **More than 90 games:** shooters, battle royales and MOBAs (Rainbow Six Siege, Marvel Rivals, League of Legends, Dota 2, Mobile Legends...), story games (GTA V, Red Dead Redemption 2, Elden Ring, God of War, Spider-Man...), old classics (GTA San Andreas, Vice City, Project IGI, CS 1.6, NFS Most Wanted, Road Rash...), horror and party games, Minecraft and Roblox, football, cricket, racing and fighting games.
-- **Podcasts and every kind of stream:** Podcast, Just Chatting, IRL, reactions and watch-alongs, music, art, coding, cooking and more. They are clipped from your voice, laughter and chat, and get their own hashtags instead of #gaming.
-- **Teach more than kills:** football games learn your **goal** (Goal, Brace, Hat-trick), soulslikes your **boss win**, fighting games your **K.O.**
-- **The stream's title decides:** "GTA San Andreas" is San Andreas, not GTA V. A title naming another game wins over your main game in Settings.
-- **A searchable game list:** type "gta" or "podcast" in Settings or the review desk.
+- **Film suite:** tangerine on warm graphite, with film perforations down the side. Clip Studio no longer looks like ChatDoom.
+- **Midnight gold:** gold on deep blue. Switch in **Settings → App → Look**; it changes at once.
+- **Easier to read:** text on orange and gold buttons is now dark, and the background glow is softer.
+
+From 0.7.5:
+
+- **More than 90 games**, **podcasts, Just Chatting and IRL**, **teach a goal, boss win or K.O.**, and a **searchable game list**.
 
 From 0.7.4:
 
