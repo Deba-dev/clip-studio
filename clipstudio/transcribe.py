@@ -98,6 +98,30 @@ def load_model(name="large-v3-turbo", device=None):
     return model
 
 
+def model_complete(name):
+    """False when a downloaded model has no usable model.bin: a download that was cut off, a file an antivirus
+    took, or a link to a removed blob. Faster-whisper falls back to such a folder when Hugging Face can't be
+    reached, then fails with "Unable to open file 'model.bin'". A model not downloaded yet counts as fine."""
+    if name not in REPOS:
+        return True
+    snapshots = os.path.join(models_dir(), cache_name(name), "snapshots")
+    if not os.path.isdir(snapshots):
+        return True
+    for snapshot in os.listdir(snapshots):
+        try:
+            if os.path.getsize(os.path.join(snapshots, snapshot, "model.bin")) > 1 << 20:   # follows links
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def forget(name):
+    """Removes a broken download so the next load fetches the model again."""
+    if name in REPOS:
+        shutil.rmtree(os.path.join(models_dir(), cache_name(name)), ignore_errors=True)
+
+
 def _load(name, device):
     from faster_whisper import WhisperModel
     device = device or ("cuda" if has_cuda() else "cpu")
@@ -105,8 +129,27 @@ def _load(name, device):
         adopt(name)
     except OSError:
         pass                                # then it is simply downloaded again
-    return WhisperModel(name, device=device, compute_type="int8_float16" if device == "cuda" else "int8",
-                        cpu_threads=max((os.cpu_count() or 4) - 2, 4), download_root=models_dir())
+
+    def build():
+        return WhisperModel(name, device=device, compute_type="int8_float16" if device == "cuda" else "int8",
+                            cpu_threads=max((os.cpu_count() or 4) - 2, 4), download_root=models_dir())
+
+    if not model_complete(name):
+        forget(name)
+    try:
+        return build()
+    except RuntimeError as e:
+        if "model.bin" not in str(e) or name not in REPOS:
+            raise
+    forget(name)                            # damaged on disk: download it once more
+    try:
+        return build()
+    except RuntimeError as e:
+        if "model.bin" not in str(e):
+            raise
+        forget(name)
+        raise RuntimeError("The speech model (%s) did not download completely. Check your internet connection "
+                           "and try again (it can be over 1 GB)." % name) from None
 
 
 def model_for(name, mode):

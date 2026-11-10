@@ -19,6 +19,8 @@ DEFAULTS = {
     "downloads_folder": "", "exports_folder": "", "update_pending": "",
     "game": "",             # the main game, as a games.py key; empty means find it from the HUD or the title
     "look": "film",         # the app's colours: "film" (Film suite) or "midnight" (Midnight gold)
+    "window_mode": "windowed", "window_geometry": "",       # see ui/window_modes.py
+    "close_to_tray": True, "esc_to_tray": True, "tray_hint_shown": False,
 }
 SECRET = {"obs_password", "account_token"}
 

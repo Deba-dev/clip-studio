@@ -18,6 +18,7 @@ from ..version import VERSION
 from . import theme as T
 from .fx import MOTION, Button, Toggle, alpha, draw_icon, font, glow, mix, panel, tween
 from .premium import PremiumSection
+from .window_modes import MODES
 
 CONTROL_W = 330         # every control lines up on the right at this width
 
@@ -448,6 +449,18 @@ class SettingsPage(QWidget):
             self.look.addItem(look["label"], key)
         self.look.setCurrentIndex(max(self.look.findData(self.w.settings.get("look")), 0))
         self.look.currentIndexChanged.connect(lambda _: self.look_changed())
+        self.window_mode = QComboBox()
+        for label, value in MODES:
+            self.window_mode.addItem(label, value)
+        self.window_mode.setCurrentIndex(max(self.window_mode.findData(self.w.modes.mode), 0))
+        self.window_mode.currentIndexChanged.connect(lambda _: self.w.modes.set_mode(self.window_mode.currentData()))
+        self.w.modes.mode_changed.connect(self.show_window_mode)
+        self.close_tray = Toggle("")
+        self.esc_tray = Toggle("")
+        self.close_tray.setChecked(bool(self.w.settings.get("close_to_tray")))
+        self.esc_tray.setChecked(bool(self.w.settings.get("esc_to_tray")))
+        self.close_tray.toggled.connect(lambda on: self.tray_changed("close_to_tray", on))
+        self.esc_tray.toggled.connect(lambda on: self.tray_changed("esc_to_tray", on))
         self.check = Button("Check for updates", "down")
         self.check.clicked.connect(self.check_updates)
         self.w.updater.nothing.connect(lambda: self.check.busy and self.check.done("You're up to date"))
@@ -524,6 +537,12 @@ class SettingsPage(QWidget):
         app = Card("App", "gear")
         app.add("Look", "Film suite is warm tangerine on graphite; Midnight gold is gold on deep blue. Changes "
                         "at once.", self.look)
+        app.add("Window", "Borderless fills the screen above the taskbar; Fullscreen covers it all. F11 switches "
+                          "fullscreen on and off. Changes at once.", self.window_mode)
+        app.add("Closing the window keeps it in the tray", "Clip Studio keeps listening to OBS and F9. Quit from the "
+                                                           "tray icon. Changes at once.", self.close_tray)
+        app.add("Esc hides it to the tray", "Esc first leaves a text box or fullscreen. Changes at once.",
+                self.esc_tray)
         app.add("Reduce motion", "Animations already pause by themselves while OBS records or streams.",
                 self.motion)
         app.add("Version " + VERSION, "Updates install only when no stream, recording or job is running.",
@@ -595,6 +614,17 @@ class SettingsPage(QWidget):
         for widget in QApplication.allWidgets():
             widget.update()
         self.w.toast(T.LOOKS[key]["label"] + " look on")
+
+    def show_window_mode(self, mode):
+        """F11 and the corner buttons change the mode too; the box follows without saving again."""
+        self.window_mode.blockSignals(True)
+        self.window_mode.setCurrentIndex(max(self.window_mode.findData(self.w.modes.mode), 0))
+        self.window_mode.blockSignals(False)
+
+    def tray_changed(self, key, on):
+        self.w.settings.set(key, on)
+        self.w.modes.sync_tray()
+        self.w.toast("Saved")
 
     def folder_changed(self, key, path):
         self.w.settings.set(key, path)

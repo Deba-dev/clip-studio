@@ -1,10 +1,14 @@
-Clip Studio 0.7.6 has its own look: warm **Film suite** by default, or **Midnight gold** if you prefer. It includes everything from 0.7.5.
+Clip Studio 0.7.7 fixes a failed analysis after a cut-off speech-model download, and lets you choose how the window opens and closes. It includes everything from 0.7.6.
 
 ## New in this version
 
-- **Film suite:** tangerine on warm graphite, with film perforations down the side. Clip Studio no longer looks like ChatDoom.
-- **Midnight gold:** gold on deep blue. Switch in **Settings → App → Look**; it changes at once.
-- **Easier to read:** text on orange and gold buttons is now dark, and the background glow is softer.
+- **A broken speech-model download fixes itself:** if the 1.6 GB model download was cut off, analysis failed with "Unable to open file 'model.bin'". Clip Studio now spots the broken download, removes it and fetches the model again. If that fails too, it says plainly that the download didn't finish and to check the internet.
+- **Window modes:** Windowed, Borderless or Fullscreen in **Settings → App → Window**. F11 switches fullscreen any time.
+- **Tray:** closing the window or pressing Esc keeps Clip Studio running in the tray, so it keeps listening to OBS and F9. You can switch each off, and quit from the tray icon.
+
+From 0.7.6:
+
+- **Film suite** and **Midnight gold** looks, switchable in Settings.
 
 From 0.7.5:
 

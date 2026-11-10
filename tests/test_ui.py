@@ -323,3 +323,70 @@ def test_saying_no_keeps_the_stream_and_its_files(window, tmp_path):
     window.streams.ask = lambda text: QMessageBox.StandardButton.No
     window.streams.remove(sid)
     assert window.library.session(sid) is not None and source.exists()
+
+
+# ---- window modes, F11, Esc and the tray
+def key(code):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    return QKeyEvent(QEvent.Type.KeyPress, code, Qt.KeyboardModifier.NoModifier)
+
+
+def test_window_modes_switch_and_are_saved(window):
+    from PySide6.QtCore import Qt
+    window.modes.show()
+    assert window.modes.current == "windowed"
+    window.modes.set_mode("borderless")
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint and window.settings.get("window_mode") == "borderless"
+    assert window.settings_page.window_mode.currentData() == "borderless"
+    window.modes.set_mode("fullscreen")
+    assert window.isFullScreen()
+    window.modes.set_mode("windowed")
+    assert not window.isFullScreen() and not window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    window.modes.set_mode("nonsense")
+    assert window.settings.get("window_mode") == "windowed"
+
+
+def test_f11_and_esc_leave_fullscreen_without_saving_it(window):
+    from PySide6.QtCore import Qt
+    window.modes.show()
+    window.keyPressEvent(key(Qt.Key.Key_F11))
+    assert window.modes.current == "fullscreen" and window.settings.get("window_mode") == "windowed"
+    window.keyPressEvent(key(Qt.Key.Key_Escape))
+    assert window.modes.current == "windowed" and window.isVisible()
+
+
+def test_close_and_esc_go_to_the_tray_when_there_is_one(window, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QCloseEvent
+    window.modes.show()
+    monkeypatch.setattr(window.modes, "tray_ready", lambda: True)
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert not event.isAccepted() and not window.isVisible() and not window.closing
+    assert window.settings.get("tray_hint_shown")
+    window.modes.show_again()
+    window.keyPressEvent(key(Qt.Key.Key_Escape))
+    assert not window.isVisible()
+    window.settings.set("esc_to_tray", False)
+    window.modes.show_again()
+    window.keyPressEvent(key(Qt.Key.Key_Escape))
+    assert window.isVisible()
+
+
+def test_quitting_while_busy_asks_first(window, monkeypatch):
+    from PySide6.QtGui import QCloseEvent
+    window.settings.set("close_to_tray", False)
+    monkeypatch.setattr(window.jobs, "busy", lambda: True)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert not event.isAccepted() and not window.closing
+    monkeypatch.setattr(window.jobs, "busy", lambda: False)
+
+
+def test_window_size_is_remembered(window):
+    window.modes.show()
+    window.resize(900, 640)
+    window.modes.remember()
+    assert window.settings.get("window_geometry")

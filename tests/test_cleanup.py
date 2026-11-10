@@ -101,3 +101,43 @@ def test_shifted_clip_keeps_every_time_relative():
     assert moved["edit"]["cuts"] == [[10, 12]] and moved["edit"]["mute"] == [[20, 21]] and moved["edit"]["pan"] == .3
     assert moved["words"][0]["s"] == 1.0
     assert edit.length(moved) == edit.length(clip)
+
+
+def _snapshot(name, size):
+    folder = os.path.join(transcribe.models_dir(), transcribe.cache_name(name), "snapshots", "abc")
+    os.makedirs(folder)
+    with open(os.path.join(folder, "config.json"), "w") as f:
+        f.write("{}")
+    if size is not None:
+        with open(os.path.join(folder, "model.bin"), "wb") as f:
+            f.truncate(size)
+    return folder
+
+
+def test_a_cut_off_model_download_is_seen_and_removed(home):
+    assert transcribe.model_complete("small")                   # not downloaded yet is fine
+    _snapshot("small", None)                                    # download stopped before model.bin
+    assert not transcribe.model_complete("small")
+    transcribe.forget("small")
+    assert not os.path.exists(os.path.join(transcribe.models_dir(), transcribe.cache_name("small")))
+    _snapshot("base", 2 << 20)
+    assert transcribe.model_complete("base")
+
+
+def test_a_broken_model_is_downloaded_once_more_then_explained(home, monkeypatch):
+    import sys
+    import types
+    calls = []
+
+    class Whisper:
+        def __init__(self, name, **kw):
+            calls.append(name)
+            raise RuntimeError("Unable to open file 'model.bin' in model 'x'")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Whisper))
+    monkeypatch.setattr(transcribe, "has_cuda", lambda: False)
+    _snapshot("small", 2 << 20)
+    with pytest.raises(RuntimeError, match="did not download completely"):
+        transcribe.load_model("small")
+    assert calls == ["small", "small"]
+    assert not os.path.exists(os.path.join(transcribe.models_dir(), transcribe.cache_name("small")))

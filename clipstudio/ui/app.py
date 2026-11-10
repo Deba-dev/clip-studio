@@ -27,6 +27,7 @@ from .premium import AccountHub, UpgradeDialog
 from .recent import RecentDialog
 from .review import ReviewPage
 from .settings_page import FolderRow, SettingsPage
+from .window_modes import WindowModes
 
 HOTKEY_ID = 7301
 VK_F9 = 0x78
@@ -727,6 +728,8 @@ class MainWindow(QMainWindow):
         self.update_path = ""
         self.hub = AccountHub(self.settings)
         self.gate = self.hub.gate
+        self.modes = WindowModes(self, self.settings, PRODUCT_NAME, busy=self.quit_would_stop,
+                                 actions=(("Mark a moment (F9)", lambda: self.mark_moment()),))
 
         root = Aurora()
         self.setCentralWidget(root)
@@ -869,6 +872,7 @@ class MainWindow(QMainWindow):
             return
         path, self.update_path = self.update_path, ""
         self.updater.launch(path)
+        self.modes.quitting = True          # an update closes the app for real, never just to the tray
         self.close()
         QApplication.quit()
 
@@ -1076,8 +1080,21 @@ class MainWindow(QMainWindow):
         if self.stack.currentWidget() is self.review and self.review.sid:
             self.review.reload()
 
+    def quit_would_stop(self):
+        if self.jobs.busy():
+            return "Clip Studio is still working on a stream. Quitting stops it; you can analyze it again later."
+        if self.tracker.sid:
+            return "OBS is recording. If Clip Studio quits, it will not analyze this recording when it stops."
+        return ""
+
+    def keyPressEvent(self, event):
+        if not self.modes.handle_key(event):
+            super().keyPressEvent(event)
+
     def closeEvent(self, event):
-        self.closing = True                 # an analysis running now is cancelled, and never resumed on next launch
+        if self.modes.close_event(event):
+            return
+        self.closing = True                # an analysis running now is cancelled, and never resumed on next launch
         self.review.save_words()
         self.review.player.stop()
         self.logger.stop()
@@ -1085,6 +1102,7 @@ class MainWindow(QMainWindow):
         if self.obs:
             self.obs.stop()
         super().closeEvent(event)
+        QApplication.quit()                 # the app outlives hidden windows, so a real close ends it here
 
 
 def check_tools():
@@ -1106,5 +1124,6 @@ def run(args):
             window.stack.setCurrentIndex(i)
         app.processEvents()
         return 0
-    window.show()
+    app.setQuitOnLastWindowClosed(False)    # hiding to the tray must not end the app; Quit ends it
+    window.modes.show()
     return app.exec()
