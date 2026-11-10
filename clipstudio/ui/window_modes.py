@@ -1,7 +1,8 @@
 """Window modes shared by every ZunimiLabs app: Windowed, Borderless or Fullscreen, F11, and Esc or close to the tray.
 
 The same file lives in each app, so keep the copies identical. It reads and writes these settings keys:
-window_mode ("windowed", "borderless", "fullscreen"), window_geometry, close_to_tray, esc_to_tray, tray_hint_shown.
+window_mode ("windowed", "borderless", "fullscreen"), window_geometry, close_to_tray, esc_to_tray, esc_ask,
+tray_hint_shown.
 
 - Windowed: a normal window with Windows' title bar. Its size and place are remembered.
 - Borderless: no title bar or border, filling the screen above the taskbar.
@@ -13,7 +14,7 @@ import base64
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QKeySequenceEdit, QLineEdit, QMenu, QMessageBox,
+from PySide6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QKeySequenceEdit, QLineEdit, QMenu, QMessageBox,
                                QPlainTextEdit, QSystemTrayIcon, QTextEdit, QWidget)
 
 MODES = (("Windowed", "windowed"), ("Borderless", "borderless"), ("Fullscreen", "fullscreen"))
@@ -243,7 +244,35 @@ class WindowModes(QObject):
         if self.current == "fullscreen":
             self.toggle_fullscreen()
             return True
-        return bool(self.s.get("esc_to_tray")) and self.hide_to_tray()
+        return bool(self.s.get("esc_to_tray")) and self.esc_hide()
+
+    def esc_hide(self):
+        """Esc hides to the tray, but first asks (Cancel is the default, so a second Esc does nothing) unless the
+        person ticked "don't ask again"."""
+        if not self.tray_ready():
+            return False
+        if self.s.get("esc_ask") is not False:
+            box = QMessageBox(self.window)
+            box.setWindowTitle(self.name)
+            box.setText("Hide %s to the tray?" % self.name)
+            box.setInformativeText("It keeps running. Click the tray icon to open it again.")
+            hide = box.addButton("Hide to tray", QMessageBox.ButtonRole.AcceptRole)
+            quit_button = box.addButton("Quit", QMessageBox.ButtonRole.DestructiveRole)
+            cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(cancel)
+            box.setEscapeButton(cancel)
+            never = QCheckBox("Don't ask again when I press Esc")
+            box.setCheckBox(never)
+            box.exec()
+            clicked = box.clickedButton()
+            if never.isChecked() and clicked is not cancel:
+                self.s.set("esc_ask", False)
+            if clicked is quit_button:
+                self.quit()
+                return True
+            if clicked is not hide:
+                return True
+        return self.hide_to_tray()
 
     # ---- tray
     def tray_ready(self):

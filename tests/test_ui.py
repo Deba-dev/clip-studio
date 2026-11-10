@@ -205,8 +205,10 @@ def test_settings_search_and_side_menu(window):
     page = window.settings_page
     page.search.setText("webSocket")
     shown = [c.title for c in page.cards if not c.isHidden()]
-    assert shown == ["OBS and live chat"]
-    assert page.nav.hidden == {i for i, c in enumerate(page.cards) if c.title != "OBS and live chat"}
+    assert shown == ["OBS or Zunimi Studio, and live chat"]
+    assert page.nav.hidden == {i for i, c in enumerate(page.cards) if c.title != "OBS or Zunimi Studio, and live chat"}
+    page.search.setText("zunimi")
+    assert [c.title for c in page.cards if not c.isHidden()] == ["OBS or Zunimi Studio, and live chat"]
     page.search.setText("zzzz nothing")
     assert not page.nothing.isHidden()
     page.search.setText("")
@@ -366,6 +368,12 @@ def test_close_and_esc_go_to_the_tray_when_there_is_one(window, monkeypatch):
     assert not event.isAccepted() and not window.isVisible() and not window.closing
     assert window.settings.get("tray_hint_shown")
     window.modes.show_again()
+    # Esc asks first; closing the question (Cancel, the default) keeps the window
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    window.keyPressEvent(key(Qt.Key.Key_Escape))
+    assert window.isVisible()
+    window.settings.set("esc_ask", False)
     window.keyPressEvent(key(Qt.Key.Key_Escape))
     assert not window.isVisible()
     window.settings.set("esc_to_tray", False)

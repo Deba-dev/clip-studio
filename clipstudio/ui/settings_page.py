@@ -461,6 +461,9 @@ class SettingsPage(QWidget):
         self.esc_tray.setChecked(bool(self.w.settings.get("esc_to_tray")))
         self.close_tray.toggled.connect(lambda on: self.tray_changed("close_to_tray", on))
         self.esc_tray.toggled.connect(lambda on: self.tray_changed("esc_to_tray", on))
+        self.esc_ask = Toggle("")
+        self.esc_ask.setChecked(self.w.settings.get("esc_ask") is not False)
+        self.esc_ask.toggled.connect(lambda on: self.tray_changed("esc_ask", on))
         self.check = Button("Check for updates", "down")
         self.check.clicked.connect(self.check_updates)
         self.w.updater.nothing.connect(lambda: self.check.busy and self.check.done("You're up to date"))
@@ -521,10 +524,12 @@ class SettingsPage(QWidget):
         export.add("Frame rate", "A clip never gets more frames than its stream has.", self.fps)
         export.add("Low-quality video", "Clean up sharpens enlarged pictures. AI upscale redraws streams below "
                                         "1080p on your graphics card.", self.enhance)
-        streaming = Card("OBS and live chat", "wave", "Clip Studio listens to OBS so analysis starts when you stop "
-                                                     "recording, and logs chat while you are live.")
-        streaming.add("OBS address", "Usually this PC: 127.0.0.1", self.host)
-        streaming.add("OBS port", "Tools > WebSocket Server Settings in OBS", self.port)
+        streaming = Card("OBS or Zunimi Studio, and live chat", "wave",
+                         "Clip Studio listens to OBS or Zunimi Studio so analysis starts when you stop recording, "
+                         "takes every Mark moment as a clip, and logs chat while you are live.")
+        streaming.add("Address", "Usually this PC: 127.0.0.1", self.host)
+        streaming.add("Port", "OBS: Tools > WebSocket Server Settings. Zunimi Studio: Settings > Remote (turn it on).",
+                      self.port)
         streaming.add("WebSocket password", "Stored encrypted by Windows", self.password)
         streaming.add("Twitch chat", "Your channel name", self.twitch)
         streaming.add("Kick chat", "Your channel name or chatroom ID", self.kick)
@@ -543,6 +548,7 @@ class SettingsPage(QWidget):
                                                            "tray icon. Changes at once.", self.close_tray)
         app.add("Esc hides it to the tray", "Esc first leaves a text box or fullscreen. Changes at once.",
                 self.esc_tray)
+        app.add("Ask before Esc hides it", "Hide to tray, Quit or Cancel; Cancel is the default.", self.esc_ask)
         app.add("Reduce motion", "Animations already pause by themselves while OBS records or streams.",
                 self.motion)
         app.add("Version " + VERSION, "Updates install only when no stream, recording or job is running.",

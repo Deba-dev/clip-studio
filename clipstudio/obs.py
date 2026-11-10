@@ -10,6 +10,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 EVENTS_OUTPUTS = 1 << 6     # stream, record and replay buffer events
+EVENTS_GENERAL = 1 << 0     # CustomEvent: Zunimi Studio sends its Mark moment this way
 
 
 def auth_string(password, salt, challenge):
@@ -55,7 +56,7 @@ class ObsClient(threading.Thread):
 
     def _identify(self, ws):
         hello = json.loads(ws.recv(timeout=5))["d"]
-        reply = {"rpcVersion": 1, "eventSubscriptions": EVENTS_OUTPUTS}
+        reply = {"rpcVersion": 1, "eventSubscriptions": EVENTS_OUTPUTS | EVENTS_GENERAL}
         need = hello.get("authentication")
         if need:
             if not self.password:
@@ -122,6 +123,8 @@ class RecordingTracker:
                 self._finish()
         elif name == "ReplayBufferSaved":
             self.mark()         # streamers already press this key on good moments
+        elif name == "CustomEvent" and data.get("zunimi") == "mark":
+            self.mark("zunimi")     # Zunimi Studio's Mark moment (menu, hotkey, phone or Stream Deck)
         elif name == "RecordFileChanged" and self.sid:
             path = data.get("newOutputPath")
             if path and path not in self.files:

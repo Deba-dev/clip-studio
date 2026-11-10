@@ -197,6 +197,19 @@ def test_tracker_builds_a_session_from_obs_events(library):
     assert tracker.mark() is None
 
 
+def test_zunimi_mark_moment_becomes_a_marker(library):
+    finished = []
+    now = [500.0]
+    tracker = RecordingTracker(library, finished.append, clock=lambda: now[0])
+    tracker.handle("RecordStateChanged", {"outputState": "OBS_WEBSOCKET_OUTPUT_STARTED", "outputPath": None})
+    now[0] = 530.0
+    tracker.handle("CustomEvent", {"zunimi": "mark", "label": "Moment 1"})
+    tracker.handle("CustomEvent", {"someone": "else"})
+    tracker.handle("RecordStateChanged", {"outputState": "OBS_WEBSOCKET_OUTPUT_STOPPED", "outputPath": "z.mp4"})
+    assert library.session(finished[0])["source"] == "z.mp4"
+    assert library.markers(finished[0]) == [(30.0, "zunimi")]
+
+
 def test_split_recording_becomes_one_source(library, monkeypatch, tmp_path):
     monkeypatch.setenv("CLIPSTUDIO_DATA", str(tmp_path))
     finished = []

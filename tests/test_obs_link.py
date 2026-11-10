@@ -54,7 +54,7 @@ def test_login_and_events_with_password():
     assert events.get(timeout=5)[0] == "Reply:GetRecordStatus"
     name, data = events.get(timeout=5)
     assert name == "RecordStateChanged" and data["outputPath"] == "a.mkv"
-    assert seen["subs"] == 64
+    assert seen["subs"] == 64 | 1
     client.stop()
     server.shutdown()
 
