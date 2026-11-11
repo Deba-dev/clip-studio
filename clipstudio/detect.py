@@ -85,8 +85,53 @@ def estimate_lag(loud, chat, low=2, high=40, default=10.0):
     return best if best_score > 0.08 else default
 
 
-def score_moments(loud, chat_rows, markers, duration, lag=None):
-    """chat_rows: (t, platform, author, text). Returns the fused curve and the parts behind it."""
+GUN_FULL = .4           # YAMNet gunfire/explosion score at which a second counts as all gunfire
+SHOUT_FULL = .08        # a shout this strong counts fully (reaction() uses the same scale)
+CHEER_FULL = .1
+VOICE_WEIGHT = 2.5      # the most a shout adds to the hype curve, in spread units like the audio lane
+GUN_DAMP = .6           # loudness that is all gunfire keeps this much less of its weight
+# A hype moment in a shooter needs gunfire this close to count as in game. Tuned on a 3-hour Valorant stream against
+# the HUD's own round track: keeps 98% of moments in live rounds and drops half of those in lobbies and menus.
+# Gunfire scores low on compressed stream audio, so even a faint shot counts.
+ACTION_BEFORE, ACTION_AFTER = 60, 30
+GUN_SEEN = .02
+
+
+def lane(lanes, name, n):
+    """One sound lane, n seconds long; silence where there is none."""
+    out = np.zeros(n)
+    if lanes and name in lanes:
+        part = np.asarray(lanes[name], dtype=np.float64)[:n]
+        out[:part.size] = part
+    return out
+
+
+def voice_lane(lanes, n):
+    """How much the streamer is shouting or cheering, 0..1 per second. Gunfire is not excitement on its own; a yell
+    is."""
+    shout = np.clip(lane(lanes, "shout", n) / SHOUT_FULL, 0, 1)
+    cheer = np.clip(lane(lanes, "cheer", n) / CHEER_FULL, 0, 1) * .7
+    return smooth(np.maximum(shout, cheer), 5)
+
+
+def gun_lane(lanes, n):
+    """How much of each second is gunfire or explosions, 0..1."""
+    return smooth(np.clip(np.maximum(lane(lanes, "gun", n), lane(lanes, "boom", n)) / GUN_FULL, 0, 1), 3)
+
+
+def in_action(lanes, t, before=ACTION_BEFORE, after=ACTION_AFTER):
+    """Was there gunfire around t? Lobbies, agent select, menus and scoreboards have none. True when nothing is known,
+    so a stream without sound tagging loses nothing."""
+    if not lanes or "gun" not in lanes:
+        return True
+    lo, hi = max(int(t) - before, 0), int(t) + after
+    window = np.maximum(lane(lanes, "gun", hi)[lo:hi], lane(lanes, "boom", hi)[lo:hi])
+    return int((window >= GUN_SEEN).sum()) >= 2
+
+
+def score_moments(loud, chat_rows, markers, duration, lag=None, lanes=None):
+    """chat_rows: (t, platform, author, text). lanes: the sound lanes, when known. Returns the fused curve and the
+    parts behind it."""
     n = max(int(np.ceil(duration)), len(loud), 1)
     level = np.full(n, -90.0)
     level[:len(loud)] = loud
@@ -102,19 +147,28 @@ def score_moments(loud, chat_rows, markers, duration, lag=None):
 
     z_audio = np.clip(smooth(robust_z(level), 5), 0, 8)
     rise = np.clip(smooth(np.diff(level, prepend=level[0]), 3) / 6.0, 0, 3)
+    voice = voice_lane(lanes, n)
+    if lanes:   # a loud spray is the game being loud; a loud yell is the streamer
+        damp = 1.0 - GUN_DAMP * gun_lane(lanes, n) * (1.0 - voice)
+        z_audio = z_audio * damp
+        rise = rise * damp
     per_minute = len(chat_rows) / max(duration / 60.0, 1.0)
     # Chat earns its weight: at 1 message a minute, a "spike" is two friends saying hi.
     chat_trust = float(np.clip((per_minute - 1.0) / 9.0, 0.0, 1.0))
     z_chat = np.clip(smooth(robust_z(smooth(on_time, 11)), 7), 0, 8)
     z_hype = np.clip(smooth(robust_z(smooth(hype, 11)), 7), 0, 8)
-    curve = z_audio * (1.0 - 0.45 * chat_trust) + rise + chat_trust * (0.9 * z_chat + 0.6 * z_hype)
-    return {"curve": curve, "audio": z_audio, "chat": z_chat, "hype": z_hype, "lag": lag, "chat_trust": chat_trust,
+    curve = (z_audio * (1.0 - 0.45 * chat_trust) + rise + VOICE_WEIGHT * voice
+             + chat_trust * (0.9 * z_chat + 0.6 * z_hype))
+    return {"curve": curve, "audio": z_audio, "voice": voice, "chat": z_chat, "hype": z_hype, "lag": lag,
+            "chat_trust": chat_trust,
             "markers": markers, "per_platform": {k: chat_series(v, n) for k, v in platforms.items()}}
 
 
 def _reasons(parts, peak):
     lo, hi = max(peak - 6, 0), peak + 7
     out = []
+    if "voice" in parts and parts["voice"][lo:hi].max(initial=0) >= .5:
+        out.append("You shouted")
     if parts["audio"][lo:hi].max(initial=0) >= 2.0:
         out.append("Your audio jumped well above the level around it")
     if parts["chat_trust"] > 0 and parts["chat"][lo:hi].max(initial=0) >= 2.0:

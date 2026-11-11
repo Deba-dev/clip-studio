@@ -20,6 +20,8 @@ from .settings import Settings
 
 WINDOW_PAD = 10         # extra audio around a candidate, so the transcript can find where the thought began
 ALL_MOMENTS = 250       # a sanity cap on clips per stream: every kill round and every death is a clip now
+SAVED_LANES = ("laugh", "gun", "boom", "shout", "cheer")     # sound lanes kept for jobs that run later
+OUTSIDE_GAME = .5        # a laugh in a lobby or menu ranks this much lower than one in the game
 
 
 def make_previews(source, sid, picks, report):
@@ -113,13 +115,13 @@ def load_lanes(sid):
     """The sound lanes saved by analysis, for jobs that run later. Missing lanes read as silence."""
     try:
         with np.load(signals_file(sid)) as z:
-            lanes = {k: z[k].astype(np.float32) for k in ("laugh", "gun") if k in z.files}
+            lanes = {k: z[k].astype(np.float32) for k in SAVED_LANES if k in z.files}
     except (OSError, ValueError):
         return None
     if not lanes:
         return None
     n = max(v.size for v in lanes.values())
-    for k in ("laugh", "gun", "shout"):
+    for k in SAVED_LANES:
         lanes.setdefault(k, np.zeros(n, dtype=np.float32))
     return lanes
 
@@ -266,14 +268,28 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
             seen["game"] = games.name_of(key)
     report("Finding moments", 0.5)
     parts = detect.score_moments(loud, library.chat(sid), library.markers(sid), info["duration"],
-                                 lag=session["chat_lag"])
+                                 lag=session["chat_lag"], lanes=lanes)
     first = int(settings.get("max_clips"))
     picks = detect.pick_moments(parts, info["duration"], ALL_MOMENTS, int(settings.get("clip_length")))
-    if game:        # lobbies and scoreboards can be loud, but nobody wants a clip of them
-        picks = [p for p in picks if p["score"] >= 100 or hud.is_live(game, p["peak"])]
+    # Lobbies, agent select, loading screens and the buy phase can be loud, but nobody wants a clip of them. In a
+    # shooter the game is on where there is gunfire; the HUD, when it can be read, also says when a round is on.
+    before = len(picks)
+    if game:
+        picks = [p for p in picks if p["score"] >= 100 or (hud.is_live(game, p["peak"]) and
+                                                           detect.in_action(lanes, p["peak"]))]
+    elif games.GAMES.get(key, {}).get("kind") == "shooter":
+        picks = [p for p in picks if p["score"] >= 100 or detect.in_action(lanes, p["peak"])]
+    seen["not_in_game"] = before - len(picks)
     moments = list(picks)
     if lanes:
-        moments += detect.laugh_moments(lanes, info["duration"])
+        laughs = detect.laugh_moments(lanes, info["duration"])
+        shooter = games.GAMES.get(key, {}).get("kind") == "shooter"
+        for m in laughs:    # a laugh in the lobby can still be funny, so it stays, below the moments in the game
+            outside = (not hud.is_live(game, m["peak"])) if game else (shooter and not detect.in_action(lanes, m["peak"]))
+            if outside:
+                m["score"] *= OUTSIDE_GAME
+                m["reasons"] = m["reasons"] + ["Outside a round"]
+        moments += laughs
     lesson = teach.load(key) if key and not game else None
     if game:
         own, team = credit_kills(source, game, lanes, vf, report)
@@ -303,7 +319,7 @@ def run(library, sid, settings=None, report=lambda stage, value: None, model=Non
     rest = [m for m in detect.select(moments, ALL_MOMENTS, weights)
             if not any(detect.overlaps(m, p) for p in picks)]   # every other moment: captioned in the background
     library.update_session(sid, chat_lag=parts["lag"], game=games.name_of(key), report=json.dumps(seen))
-    extra = {k: v.astype(np.float16) for k, v in (lanes or {}).items() if k in ("laugh", "gun")}
+    extra = {k: v.astype(np.float16) for k, v in (lanes or {}).items() if k in SAVED_LANES}
     np.savez_compressed(signals_file(sid), curve=parts["curve"].astype(np.float16), loud=loud.astype(np.float16),
                         events=json.dumps(game["events"] if game else []), **extra)
 

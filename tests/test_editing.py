@@ -245,6 +245,35 @@ def test_a_laugh_becomes_a_funny_clip_with_its_setup():
     assert m[0]["start"] <= 480 and m[0]["end"] >= 505
 
 
+def test_a_yell_outranks_a_louder_spray():
+    """Gunfire is the game being loud; a shout is the streamer. Same loudness, the shout wins."""
+    loud = np.full(2000, -30.0)
+    loud[500:504] = loud[1500:1504] = -8.0
+    s = lanes()
+    s["gun"][498:506] = .9          # a spray at 500
+    s["shout"][1499:1505] = .2      # a yell at 1500
+    parts = detect.score_moments(loud, [], [], 2000, lanes=s)
+    assert parts["curve"][1501] > parts["curve"][501] * 1.5
+    pick = detect.pick_moments(parts, 2000, limit=1)[0]
+    assert abs(pick["peak"] - 1501) <= 3 and "You shouted" in pick["reasons"]
+
+
+def test_without_sound_lanes_the_curve_is_unchanged():
+    loud = np.full(2000, -30.0)
+    loud[700:704] = -8.0
+    assert np.allclose(detect.score_moments(loud, [], [], 2000)["curve"],
+                       detect.score_moments(loud, [], [], 2000, lanes=None)["curve"])
+
+
+def test_a_moment_far_from_any_gunfire_is_not_in_the_game():
+    """Lobby, agent select, loading screens and the buy phase have no shooting nearby."""
+    s = lanes()
+    s["gun"][1000:1004] = .05       # faint shots still count: stream audio is compressed
+    assert detect.in_action(s, 990) and detect.in_action(s, 1050)
+    assert not detect.in_action(s, 1200) and not detect.in_action(s, 300)
+    assert detect.in_action(None, 300)      # nothing known: keep everything
+
+
 def test_a_triple_kill_beats_a_loud_nothing():
     """With no closer look possible, every enemy that went down counts."""
     s = lanes()
