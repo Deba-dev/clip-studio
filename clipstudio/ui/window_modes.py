@@ -7,8 +7,9 @@ tray_hint_shown.
 - Windowed: a normal window with Windows' title bar. Its size and place are remembered.
 - Borderless: no title bar or border, filling the screen above the taskbar.
 - Fullscreen: covers the whole screen, taskbar included. F11 switches it on and off at any time.
-Borderless and fullscreen have no title bar, so minimize, back-to-window and close slide in at the top right when the
-mouse touches the top edge of the screen.
+Borderless and fullscreen have no title bar, so move, minimize, back-to-window and close slide in at the top right when
+the mouse touches the top edge of the screen. Dragging the move grip pops the window out into a normal window that
+follows the mouse, like dragging a maximized window off the top of the screen.
 """
 import base64
 
@@ -24,8 +25,8 @@ HINT = "%s is still running here in the tray. Click this icon to open it, or cha
 
 
 class CornerControls(QWidget):
-    """Minimize, back to a normal window, and close, for windows without a title bar."""
-    BUTTONS = (("min", "Minimize"), ("window", "Back to a normal window"), ("close", "Close"))
+    """Move, minimize, back to a normal window, and close, for windows without a title bar."""
+    BUTTONS = (("move", "Drag to move the window"), ("min", "Minimize"), ("window", "Back to a normal window"), ("close", "Close"))
     SIZE = 46
 
     def __init__(self, modes):
@@ -51,6 +52,8 @@ class CornerControls(QWidget):
         if i != self.hot:
             self.hot = i
             self.setToolTip(self.BUTTONS[i][1] if i >= 0 else "")
+            move = i >= 0 and self.BUTTONS[i][0] == "move"
+            self.setCursor(Qt.CursorShape.SizeAllCursor if move else Qt.CursorShape.PointingHandCursor)
             self.update()
 
     def leaveEvent(self, event):
@@ -65,7 +68,9 @@ class CornerControls(QWidget):
             return
         self.hide()
         name = self.BUTTONS[i][0]
-        if name == "min":
+        if name == "move":
+            self.modes.drag_out()
+        elif name == "min":
             self.modes.window.showMinimized()
         elif name == "window":
             self.modes.set_mode("windowed")
@@ -87,7 +92,13 @@ class CornerControls(QWidget):
             p.setPen(QPen(QColor(236, 239, 246), 1.4))
             p.setBrush(Qt.BrushStyle.NoBrush)
             c = r.center()
-            if name == "min":
+            if name == "move":                  # a grip of six dots
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(236, 239, 246))
+                for dx in (-3, 3):
+                    for dy in (-5, 0, 5):
+                        p.drawEllipse(c.x() + dx - 1, c.y() + dy - 1, 3, 3)
+            elif name == "min":
                 p.drawLine(c.x() - 5, c.y(), c.x() + 5, c.y())
             elif name == "window":
                 p.drawRect(c.x() - 5, c.y() - 4, 10, 8)
@@ -159,6 +170,28 @@ class WindowModes(QObject):
             self.before_full = self.current or "windowed"
             self.apply("fullscreen")
 
+    def drag_out(self):
+        """The move grip: back to a normal window under the mouse, which then follows the mouse until it is let go."""
+        w = self.window
+        at = QCursor.pos()
+        old = w.frameGeometry()
+        share = (at.x() - old.x()) / max(1, old.width())       # keep the mouse at the same place across the top
+        self.set_mode("windowed")
+        if w.isMaximized():
+            w.showNormal()
+        frame = w.frameGeometry()
+        screen = (w.screen() or QApplication.primaryScreen()).availableGeometry()
+        if frame.width() > screen.width() * 0.9 or frame.height() > screen.height() * 0.9:   # nearly the whole screen: a real window
+            w.resize(int(screen.width() * 0.7), int(screen.height() * 0.75))
+            frame = w.frameGeometry()
+        w.move(at.x() - int(frame.width() * share), at.y() - 12)
+
+        def follow():
+            handle = w.windowHandle()
+            if handle is not None and QApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+                handle.startSystemMove()
+        QTimer.singleShot(0, follow)
+
     def apply(self, mode):
         w = self.window
         if self.current == "windowed" and mode != "windowed":
@@ -190,8 +223,9 @@ class WindowModes(QObject):
         self.mode_changed.emit(mode)
 
     def remember(self):
-        if self.current == "windowed" and self.window.isVisible() and not self.window.isMinimized():
-            data = bytes(self.window.saveGeometry())
+        w = self.window
+        if self.current == "windowed" and w.isVisible() and not w.isMinimized() and not w.isFullScreen():
+            data = bytes(w.saveGeometry())
             self.s.set("window_geometry", base64.b64encode(data).decode("ascii"))
 
     def restore(self):
@@ -201,6 +235,11 @@ class WindowModes(QObject):
                 self.window.restoreGeometry(QByteArray(base64.b64decode(raw)))
             except (ValueError, TypeError):
                 pass
+        # A size saved while the window was fullscreen brought fullscreen back inside Windowed mode: no title bar, so
+        # it could not be dragged. Windowed never starts fullscreen; maximized is fine.
+        state = self.window.windowState()
+        if state & Qt.WindowState.WindowFullScreen:
+            self.window.setWindowState(state & ~Qt.WindowState.WindowFullScreen)
 
     # ---- the corner buttons
     def hover(self):
